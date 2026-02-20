@@ -1,0 +1,76 @@
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f5f5f5;
+    font-size: 0.9rem;
+}
+
+/* Stats cards */
+.stat-card { transition: transform 0.15s; }
+.stat-card:hover { transform: translateY(-3px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+.stat-label { font-size: 0.75rem; opacity: 0.85; }
+.stat-value { font-size: 1.4rem; font-weight: bold; }
+
+/* Recommendation breakdown cards */
+.rec-card { transition: transform 0.15s; }
+.rec-card:hover { transform: translateY(-2px); box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
+
+/* Table */
+#matchesTable { font-size: 0.82rem; }
+#matchesTable thead th {
+    background-color: #343a40;
+    color: white;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    font-size: 0.8rem;
+    padding: 6px 8px;
+}
+#matchesTable tbody td { padding: 4px 8px; vertical-align: middle; }
+#matchesTable tbody tr:hover { background-color: #e9ecef !important; }
+
+/* Score badges */
+.score-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: bold;
+    font-size: 0.8rem;
+    min-width: 32px;
+    text-align: center;
+}
+.score-perfect { background-color: #28a745; color: white; }
+.score-high { background-color: #ffc107; color: black; }
+.score-medium { background-color: #fd7e14; color: white; }
+.score-low { background-color: #dc3545; color: white; }
+
+/* Truncate long text */
+.truncate {
+    max-width: 180px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Row selection */
+.row-selected { background-color: #cfe2ff !important; }
+
+/* Card defaults */
+.card { box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+
+/* Scrollbar */
+.table-responsive::-webkit-scrollbar { height: 8px; }
+.table-responsive::-webkit-scrollbar-track { background: #f1f1f1; }
+.table-responsive::-webkit-scrollbar-thumb { background: #aaa; border-radius: 4px; }
+.table-responsive::-webkit-scrollbar-thumb:hover { background: #777; }
+
+/* DataTables processing overlay */
+.dataTables_processing {
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%);
+    z-index: 100;
+    background: rgba(255,255,255,0.9) !important;
+    padding: 20px !important;
+    border-radius: 8px;
+}
