@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BA Deduplication Review</title>
+    <title>BA/Address Import - Canvas</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -13,7 +13,7 @@
     <nav class="navbar navbar-dark bg-dark">
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1">
-                <i class="fas fa-users-cog"></i> BA Dedup Review
+                <i class="fas fa-users-cog"></i> BA/Address Import - Canvas
             </span>
             <div class="d-flex align-items-center gap-2">
                 <button class="btn btn-outline-light btn-sm" onclick="refreshData()">
@@ -26,51 +26,35 @@
     <div class="container-fluid mt-3">
         <!-- Stats Row -->
         <div class="row mb-3" id="statsCards">
-            <div class="col-md-2">
-                <div class="card stat-card bg-primary text-white">
+            <div class="col-md-3">
+                <div class="card stat-card bg-primary text-white" onclick="filterByStat('all')" style="cursor:pointer">
                     <div class="card-body py-2">
                         <div class="stat-label">Total Records</div>
                         <div class="stat-value" id="totalRecords">-</div>
                     </div>
                 </div>
             </div>
-            <div class="col-md-2">
-                <div class="card stat-card bg-success text-white">
+            <div class="col-md-3">
+                <div class="card stat-card bg-success text-white" onclick="filterByStat('ssn_yes')" style="cursor:pointer">
                     <div class="card-body py-2">
                         <div class="stat-label">SSN Perfect</div>
                         <div class="stat-value" id="ssnPerfect">-</div>
                     </div>
                 </div>
             </div>
-            <div class="col-md-2">
-                <div class="card stat-card bg-warning text-dark">
+            <div class="col-md-3">
+                <div class="card stat-card bg-warning text-dark" onclick="filterByStat('ssn_partial')" style="cursor:pointer">
                     <div class="card-body py-2">
                         <div class="stat-label">SSN Partial</div>
                         <div class="stat-value" id="ssnPartial">-</div>
                     </div>
                 </div>
             </div>
-            <div class="col-md-2">
-                <div class="card stat-card bg-danger text-white">
+            <div class="col-md-3">
+                <div class="card stat-card bg-danger text-white" onclick="filterByStat('ssn_no')" style="cursor:pointer">
                     <div class="card-body py-2">
                         <div class="stat-label">No SSN Match</div>
                         <div class="stat-value" id="ssnNone">-</div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-2">
-                <div class="card stat-card bg-info text-white">
-                    <div class="card-body py-2">
-                        <div class="stat-label">Avg Name Score</div>
-                        <div class="stat-value" id="avgNameScore">-</div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-2">
-                <div class="card stat-card bg-secondary text-white">
-                    <div class="card-body py-2">
-                        <div class="stat-label">Avg Addr Score</div>
-                        <div class="stat-value" id="avgAddressScore">-</div>
                     </div>
                 </div>
             </div>
@@ -89,20 +73,41 @@
                             <option value="">All</option>
                         </select>
                     </div>
-                    <div class="col-md-2">
+                    <div class="col-md-1">
                         <label for="ssnFilter" class="form-label form-label-sm mb-1">SSN Match</label>
                         <select id="ssnFilter" class="form-select form-select-sm">
                             <option value="">All</option>
-                            <option value="perfect">Perfect (100)</option>
-                            <option value="partial">Partial (1-99)</option>
-                            <option value="none">None (0)</option>
+                            <option value="yes">Yes</option>
+                            <option value="partial">Partial</option>
+                            <option value="no">No</option>
                         </select>
                     </div>
                     <div class="col-md-2">
                         <label for="minNameScore" class="form-label form-label-sm mb-1">Min Name Score</label>
-                        <input type="number" id="minNameScore" class="form-control form-control-sm" min="0" max="100" placeholder="e.g. 80">
+                        <select id="minNameScore" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            <option value="0">0</option><option value="5">5</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="35">35</option><option value="40">40</option><option value="45">45</option><option value="50">50</option><option value="55">55</option><option value="60">60</option><option value="65">65</option><option value="70">70</option><option value="75">75</option><option value="80">80</option><option value="85">85</option><option value="90">90</option><option value="95">95</option><option value="100">100</option>
+                        </select>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-2">
+                        <label for="minAddrScore" class="form-label form-label-sm mb-1">Min Address Score</label>
+                        <select id="minAddrScore" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            <option value="0">0</option><option value="5">5</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="25">25</option><option value="30">30</option><option value="35">35</option><option value="40">40</option><option value="45">45</option><option value="50">50</option><option value="55">55</option><option value="60">60</option><option value="65">65</option><option value="70">70</option><option value="75">75</option><option value="80">80</option><option value="85">85</option><option value="90">90</option><option value="95">95</option><option value="100">100</option>
+                        </select>
+                    </div>
+                    <div class="col-md-1">
+                        <label for="pageSizeSelect" class="form-label form-label-sm mb-1">Show</label>
+                        <select id="pageSizeSelect" class="form-select form-select-sm">
+                            <option value="25">25</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                            <option value="500">500</option>
+                            <option value="1000">1000</option>
+                            <option value="5000">5000</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
                         <button class="btn btn-primary btn-sm me-1" onclick="applyFilters()">
                             <i class="fas fa-filter"></i> Apply
                         </button>

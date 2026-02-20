@@ -49,6 +49,12 @@ $(document).ready(function() {
         updateSelectionInfo();
     });
 
+    // Page size dropdown
+    $('#pageSizeSelect').on('change', function() {
+        var size = parseInt($(this).val());
+        table.page.len(size).draw();
+    });
+
     // Row selection
     $('#matchesTable tbody').on('change', '.row-select', function() {
         const id = $(this).data('row-id');
@@ -70,6 +76,8 @@ function initTable() {
                 d.ssn_match = $('#ssnFilter').val();
                 var minName = $('#minNameScore').val();
                 if (minName) d.min_name_score = minName;
+                var minAddr = $('#minAddrScore').val();
+                if (minAddr) d.min_addr_score = minAddr;
             }
         },
         columns: [
@@ -79,7 +87,7 @@ function initTable() {
                     return `<input type="checkbox" class="row-select" data-row-id="${data._row_id}">`;
                 }
             },
-            { data: 'ssn_match', render: scoreBadge },
+            { data: 'ssn_match', render: ssnBadge },
             { data: 'name_score', render: scoreBadge },
             { data: 'address_score', render: scoreBadge },
             { data: 'recommendation', render: recBadge },
@@ -125,6 +133,11 @@ function initTable() {
     });
 }
 
+function ssnBadge(val) {
+    if (val === 100) return '<span class="badge bg-success">Yes</span>';
+    return '<span class="badge bg-danger">No</span>';
+}
+
 function scoreBadge(val) {
     if (val === '' || val === null || val === undefined) return '<span class="badge bg-secondary">-</span>';
     let cls = 'score-low';
@@ -151,8 +164,6 @@ function loadStats() {
         $('#ssnPerfect').text(s.ssn_perfect_matches.toLocaleString());
         $('#ssnPartial').text(s.ssn_partial_matches.toLocaleString());
         $('#ssnNone').text(s.ssn_no_match.toLocaleString());
-        $('#avgNameScore').text(s.avg_name_score + '%');
-        $('#avgAddressScore').text(s.avg_address_score + '%');
 
         // Recommendation breakdown row
         let html = '';
@@ -178,6 +189,29 @@ function filterByRec(rec) {
     applyFilters();
 }
 
+function filterByStat(type) {
+    if (type === 'all') {
+        $('#pageSizeSelect').val('5000');
+        clearFilters();
+        table.page.len(5000).draw();
+    } else if (type === 'ssn_yes') {
+        $('#pageSizeSelect').val('5000');
+        $('#ssnFilter').val('yes');
+        table.page.len(5000).draw();
+        applyFilters();
+    } else if (type === 'ssn_partial') {
+        $('#pageSizeSelect').val('5000');
+        $('#ssnFilter').val('partial');
+        table.page.len(5000).draw();
+        applyFilters();
+    } else if (type === 'ssn_no') {
+        $('#pageSizeSelect').val('5000');
+        $('#ssnFilter').val('no');
+        table.page.len(5000).draw();
+        applyFilters();
+    }
+}
+
 function applyFilters() {
     selectedRows.clear();
     $('#selectAll').prop('checked', false);
@@ -189,6 +223,7 @@ function clearFilters() {
     $('#recommendationFilter').val('');
     $('#ssnFilter').val('');
     $('#minNameScore').val('');
+    $('#minAddrScore').val('');
     applyFilters();
 }
 
