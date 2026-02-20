@@ -331,7 +331,6 @@ function enableColumnResize(tableSelector) {
     $ths.each(function(idx) {
         if (!resizableIndices.has(idx)) return;
         const $th = $(this);
-        $th.css('position', 'relative');
         $th.append('<div class="col-resize-handle"></div>');
     });
 
@@ -415,6 +414,7 @@ function loadStats() {
 }
 
 function filterByRec(rec) {
+    table.page.len(100).draw(false);
     $('#recommendationFilter').val(rec);
     $('#ssnFilter').val('');
     applyFilters();
