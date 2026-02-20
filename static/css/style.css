@@ -2,7 +2,24 @@ body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     background-color: #f5f5f5;
     font-size: 0.9rem;
+    margin: 0;
 }
+
+/* Header section - compact spacing */
+#headerSection .mb-3 { margin-bottom: 0.5rem !important; }
+#headerSection .mb-2 { margin-bottom: 0.25rem !important; }
+
+/* DataTables controls relocated to header */
+#dtLengthPlaceholder .dataTables_length,
+#dtSearchPlaceholder .dataTables_filter { margin: 0; padding: 0; display: flex; align-items: center; }
+#dtLengthPlaceholder label,
+#dtSearchPlaceholder label { margin: 0; font-size: 0.82rem; display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+#dtLengthPlaceholder select { height: 28px; font-size: 0.82rem; }
+#dtSearchPlaceholder input { height: 28px; font-size: 0.82rem; }
+
+/* Hide the empty wrapper slots left behind after relocation */
+#tableSection .dataTables_length,
+#tableSection .dataTables_filter { display: none; }
 
 /* Stats cards */
 .stat-card { transition: transform 0.15s; }
@@ -25,7 +42,8 @@ body {
     font-size: 0.8rem;
     padding: 6px 8px;
 }
-#matchesTable tbody td { padding: 4px 8px; vertical-align: middle; }
+#matchesTable tbody td { padding: 4px 8px; vertical-align: middle; -webkit-user-select: text !important; user-select: text !important; cursor: text; }
+#matchesTable_wrapper, #matchesTable, #tableSection { -webkit-user-select: text !important; user-select: text !important; }
 #matchesTable tbody tr:hover { background-color: #e9ecef !important; }
 
 /* Score badges */
@@ -51,6 +69,9 @@ body {
     text-overflow: ellipsis;
 }
 
+/* Cell selection (column-confined) */
+.cell-selected { background-color: #b3d9ff !important; outline: 1px solid #0d6efd; }
+
 /* Row selection */
 .row-selected { background-color: #cfe2ff !important; }
 
@@ -58,10 +79,10 @@ body {
 .card { box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
 
 /* Scrollbar */
-.table-responsive::-webkit-scrollbar { height: 8px; }
-.table-responsive::-webkit-scrollbar-track { background: #f1f1f1; }
-.table-responsive::-webkit-scrollbar-thumb { background: #aaa; border-radius: 4px; }
-.table-responsive::-webkit-scrollbar-thumb:hover { background: #777; }
+#tableSection::-webkit-scrollbar { width: 8px; }
+#tableSection::-webkit-scrollbar-track { background: #f1f1f1; }
+#tableSection::-webkit-scrollbar-thumb { background: #aaa; border-radius: 4px; }
+#tableSection::-webkit-scrollbar-thumb:hover { background: #777; }
 
 /* DataTables processing overlay */
 .dataTables_processing {

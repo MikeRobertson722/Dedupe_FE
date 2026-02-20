@@ -102,6 +102,51 @@ $(document).ready(function() {
         reader.readAsText(file);
     });
 
+    // Column-confined cell selection (click = single, Shift+click = range)
+    let lastClickedCell = null;
+    $('#matchesTable').on('click', 'tbody td', function(e) {
+        if ($(e.target).is('input, button, i, a')) return;
+        const td = $(this);
+        const colIdx = td.index();
+
+        if (e.shiftKey && lastClickedCell && lastClickedCell.colIdx === colIdx) {
+            // Shift+click: select range in same column
+            const rows = $('#matchesTable tbody tr:visible');
+            const startRow = rows.index(lastClickedCell.tr);
+            const endRow = rows.index(td.closest('tr'));
+            const lo = Math.min(startRow, endRow);
+            const hi = Math.max(startRow, endRow);
+            $('.cell-selected').removeClass('cell-selected');
+            rows.slice(lo, hi + 1).each(function() {
+                $(this).find('td').eq(colIdx).addClass('cell-selected');
+            });
+        } else {
+            // Single click: select one cell
+            $('.cell-selected').removeClass('cell-selected');
+            td.addClass('cell-selected');
+            lastClickedCell = { colIdx: colIdx, tr: td.closest('tr')[0] };
+        }
+    });
+
+    // Ctrl+C / Cmd+C: copy selected cell values
+    $(document).on('keydown', function(e) {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'c' && $('.cell-selected').length > 0) {
+            e.preventDefault();
+            const vals = $('.cell-selected').map(function() {
+                return $(this).text().trim();
+            }).get();
+            navigator.clipboard.writeText(vals.join('\n'));
+            showToast(`Copied ${vals.length} value(s)`, 'success');
+        }
+    });
+
+    // Click outside table clears cell selection
+    $(document).on('click', function(e) {
+        if (!$(e.target).closest('#matchesTable tbody').length) {
+            $('.cell-selected').removeClass('cell-selected');
+        }
+    });
+
     // Row selection
     $('#matchesTable tbody').on('change', '.row-select', function() {
         const id = $(this).data('row-id');
@@ -111,22 +156,61 @@ $(document).ready(function() {
         updateSelectionInfo();
     });
 
-    // JIB/Rev/Vendor checkbox toggle — in-memory only until Save
+    // JIB/Rev/Vendor checkbox toggle — applies to all cell-selected rows if any
     $('#matchesTable tbody').on('change', '.field-check', function() {
-        const rowId = $(this).data('row-id');
         const field = $(this).data('field');
         const value = $(this).prop('checked') ? 1 : 0;
-        $.ajax({
-            url: '/api/update',
-            method: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify({ row_id: rowId, field: field, value: value }),
-            success: function(data) {
-                pendingCount = data.pending_count || 0;
-                updateSaveBtn();
-            },
-            error: function() { showToast('Toggle failed', 'error'); }
-        });
+        const selectedCells = $('.cell-selected');
+
+        if (selectedCells.length > 1) {
+            // Apply to all rows that have a selected cell
+            const rowIds = [];
+            const seen = new Set();
+            selectedCells.each(function() {
+                const tr = $(this).closest('tr');
+                const cb = tr.find(`.field-check[data-field="${field}"]`);
+                if (cb.length) {
+                    const rid = cb.data('row-id');
+                    if (!seen.has(rid)) {
+                        seen.add(rid);
+                        rowIds.push(rid);
+                        cb.prop('checked', !!value);
+                    }
+                }
+            });
+            // Send all updates
+            let completed = 0;
+            rowIds.forEach(function(rid) {
+                $.ajax({
+                    url: '/api/update',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({ row_id: rid, field: field, value: value }),
+                    success: function(data) {
+                        pendingCount = data.pending_count || 0;
+                        updateSaveBtn();
+                        if (++completed === rowIds.length) {
+                            showToast(`Set ${field.toUpperCase()} on ${rowIds.length} rows`, 'success');
+                        }
+                    },
+                    error: function() { showToast('Toggle failed', 'error'); }
+                });
+            });
+        } else {
+            // Single row update
+            const rowId = $(this).data('row-id');
+            $.ajax({
+                url: '/api/update',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ row_id: rowId, field: field, value: value }),
+                success: function(data) {
+                    pendingCount = data.pending_count || 0;
+                    updateSaveBtn();
+                },
+                error: function() { showToast('Toggle failed', 'error'); }
+            });
+        }
     });
 });
 
@@ -206,7 +290,8 @@ function initTable() {
         lengthMenu: [[100, 500, 1000, 5000], [100, 500, '1,000', '5,000']],
         order: [[1, 'desc']],
         language: {
-            processing: '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>'
+            processing: '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>',
+            lengthMenu: 'Show _MENU_'
         },
         drawCallback: function() {
             $('.row-select').each(function() {
@@ -218,6 +303,10 @@ function initTable() {
             });
         }
     });
+
+    // Move DataTables length and search controls into the header
+    $('#matchesTable_length').detach().appendTo('#dtLengthPlaceholder');
+    $('#matchesTable_filter').detach().appendTo('#dtSearchPlaceholder');
 }
 
 function ssnBadge(val) {
