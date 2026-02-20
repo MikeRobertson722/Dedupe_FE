@@ -218,6 +218,7 @@ function initTable() {
     table = $('#matchesTable').DataTable({
         processing: true,
         serverSide: true,
+        autoWidth: false,
         ajax: {
             url: '/api/matches',
             data: function(d) {
@@ -230,57 +231,57 @@ function initTable() {
             }
         },
         columns: [
-            {
-                data: null, orderable: false, className: 'text-center',
+            {   // 0: Checkbox
+                data: null, orderable: false, className: 'text-center', width: '30px',
                 render: function(data) {
                     return `<input type="checkbox" class="row-select" data-row-id="${data._row_id}">`;
                 }
             },
-            { data: 'ssn_match', render: ssnBadge },
-            { data: 'name_score', render: scoreBadge },
-            { data: 'address_score', render: scoreBadge },
-            { data: 'recommendation', render: recBadge },
-            { data: 'canvas_name', className: 'truncate' },
-            { data: 'canvas_address', className: 'truncate' },
-            {
-                data: null, orderable: false,
+            { data: 'ssn_match', render: ssnBadge, width: '42px' },           // 1: SSN
+            { data: 'name_score', render: scoreBadge, width: '42px' },         // 2: Name
+            { data: 'address_score', render: scoreBadge, width: '42px' },      // 3: Addr
+            { data: 'recommendation', render: recBadge, className: 'rec-col', width: '210px' }, // 4: Rec
+            { data: 'canvas_name', className: 'resizable' },                    // 5: Canvas Name
+            { data: 'canvas_address', className: 'resizable' },               // 6: Canvas Addr
+            {   // 7: Canvas City/St/Zip
+                data: null, orderable: false, className: 'resizable',
                 render: function(d) {
                     return `${d.canvas_city || ''}, ${d.canvas_state || ''} ${d.canvas_zip || ''}`;
                 }
             },
-            { data: 'canvas_id' },
-            { data: 'dec_name', className: 'truncate' },
-            { data: 'dec_address', className: 'truncate' },
-            {
-                data: null, orderable: false,
+            { data: 'canvas_id', width: '75px' },                             // 8: Canvas ID
+            { data: 'dec_name', className: 'resizable' },                      // 9: DEC Name
+            { data: 'dec_address', className: 'resizable' },                  // 10: DEC Addr
+            {   // 11: DEC City/St/Zip
+                data: null, orderable: false, className: 'resizable',
                 render: function(d) {
                     return `${d.dec_city || ''}, ${d.dec_state || ''} ${d.dec_zip || ''}`;
                 }
             },
-            { data: 'dec_hdrcode' },
-            {
-                data: 'jib', className: 'text-center',
+            { data: 'dec_hdrcode', width: '65px' },                           // 12: DEC Code
+            {   // 13: JIB
+                data: 'jib', className: 'text-center', width: '35px',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="jib" ${checked}>`;
                 }
             },
-            {
-                data: 'rev', className: 'text-center',
+            {   // 14: Rev
+                data: 'rev', className: 'text-center', width: '35px',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="rev" ${checked}>`;
                 }
             },
-            {
-                data: 'vendor', className: 'text-center',
+            {   // 15: Vendor
+                data: 'vendor', className: 'text-center', width: '50px',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="vendor" ${checked}>`;
                 }
             },
-            {
-                data: null, orderable: false,
+            {   // 16: Actions
+                data: null, orderable: false, width: '70px',
                 render: function(data) {
                     return `<button class="btn btn-sm btn-outline-primary py-0 px-1" onclick="editRecord(${data._row_id})" title="Edit"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-outline-success py-0 px-1" onclick="quickApprove(${data._row_id})" title="Approve"><i class="fas fa-check"></i></button>`;
                 }
@@ -307,6 +308,60 @@ function initTable() {
     // Move DataTables length and search controls into the header
     $('#matchesTable_length').detach().appendTo('#dtLengthPlaceholder');
     $('#matchesTable_filter').detach().appendTo('#dtSearchPlaceholder');
+
+    // Column resizing
+    enableColumnResize('#matchesTable');
+}
+
+function enableColumnResize(tableSelector) {
+    const $table = $(tableSelector);
+    $table.css('table-layout', 'fixed');
+
+    // Only add resize handles to columns whose td has class 'resizable'
+    // DataTables applies className to td, so check which column indices are resizable
+    const resizableIndices = new Set();
+    $table.DataTable().columns().every(function(idx) {
+        const col = this.settings()[0].aoColumns[idx];
+        if (col.sClass && col.sClass.indexOf('resizable') !== -1) {
+            resizableIndices.add(idx);
+        }
+    });
+
+    const $ths = $table.find('thead th');
+    $ths.each(function(idx) {
+        if (!resizableIndices.has(idx)) return;
+        const $th = $(this);
+        $th.css('position', 'relative');
+        $th.append('<div class="col-resize-handle"></div>');
+    });
+
+    // Drag logic
+    let dragging = false, startX, startW, $dragTh;
+
+    $table.on('mousedown', '.col-resize-handle', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        dragging = true;
+        $dragTh = $(this).closest('th');
+        startX = e.pageX;
+        startW = $dragTh.outerWidth();
+        $('body').addClass('col-resizing');
+    });
+
+    $(document).on('mousemove.colresize', function(e) {
+        if (!dragging) return;
+        const diff = e.pageX - startX;
+        const newW = Math.max(50, startW + diff);
+        $dragTh.css('width', newW + 'px');
+    });
+
+    $(document).on('mouseup.colresize', function() {
+        if (dragging) {
+            dragging = false;
+            $dragTh = null;
+            $('body').removeClass('col-resizing');
+        }
+    });
 }
 
 function ssnBadge(val) {

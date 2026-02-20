@@ -69,6 +69,23 @@ body {
     text-overflow: ellipsis;
 }
 
+/* Recommendation column - clip long badges */
+td.rec-col { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+
+/* Column resize handles */
+.col-resize-handle {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 5px;
+    cursor: col-resize;
+    z-index: 11;
+}
+.col-resize-handle:hover { background: rgba(255,255,255,0.3); }
+body.col-resizing { cursor: col-resize !important; user-select: none !important; }
+body.col-resizing * { cursor: col-resize !important; }
+
 /* Cell selection (column-confined) */
 .cell-selected { background-color: #b3d9ff !important; outline: 1px solid #0d6efd; }
 
