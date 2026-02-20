@@ -50,11 +50,6 @@ $(document).ready(function() {
         updateSelectionInfo();
     });
 
-    // Page size dropdown
-    $('#pageSizeSelect').on('change', function() {
-        var size = parseInt($(this).val());
-        table.page.len(size).draw();
-    });
 
     // Auto-apply filters on dropdown change
     $('#recommendationFilter, #ssnFilter, #minNameScore, #minAddrScore').on('change', function() {
@@ -180,21 +175,21 @@ function initTable() {
             },
             { data: 'dec_hdrcode' },
             {
-                data: 'jib', orderable: false, className: 'text-center',
+                data: 'jib', className: 'text-center',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="jib" ${checked}>`;
                 }
             },
             {
-                data: 'rev', orderable: false, className: 'text-center',
+                data: 'rev', className: 'text-center',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="rev" ${checked}>`;
                 }
             },
             {
-                data: 'vendor', orderable: false, className: 'text-center',
+                data: 'vendor', className: 'text-center',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="vendor" ${checked}>`;
@@ -207,8 +202,8 @@ function initTable() {
                 }
             }
         ],
-        pageLength: 25,
-        lengthMenu: [[10, 25, 50, 100, 500], [10, 25, 50, 100, 500]],
+        pageLength: 100,
+        lengthMenu: [[100, 500, 1000, 5000], [100, 500, '1,000', '5,000']],
         order: [[1, 'desc']],
         language: {
             processing: '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>'
@@ -254,7 +249,6 @@ function loadStats() {
     $.get('/api/stats', function(s) {
         $('#totalRecords').text(s.total_records.toLocaleString());
         $('#ssnPerfect').text(s.ssn_perfect_matches.toLocaleString());
-        $('#ssnPartial').text(s.ssn_partial_matches.toLocaleString());
         $('#ssnNone').text(s.ssn_no_match.toLocaleString());
 
         // Recommendation breakdown row
@@ -278,28 +272,22 @@ function loadStats() {
 
 function filterByRec(rec) {
     $('#recommendationFilter').val(rec);
+    $('#ssnFilter').val('');
     applyFilters();
 }
 
 function filterByStat(type) {
+    table.page.len(100).draw(false);
     if (type === 'all') {
-        $('#pageSizeSelect').val('5000');
         clearFilters();
-        table.page.len(5000).draw();
     } else if (type === 'ssn_yes') {
-        $('#pageSizeSelect').val('5000');
         $('#ssnFilter').val('yes');
-        table.page.len(5000).draw();
         applyFilters();
     } else if (type === 'ssn_partial') {
-        $('#pageSizeSelect').val('5000');
         $('#ssnFilter').val('partial');
-        table.page.len(5000).draw();
         applyFilters();
     } else if (type === 'ssn_no') {
-        $('#pageSizeSelect').val('5000');
         $('#ssnFilter').val('no');
-        table.page.len(5000).draw();
         applyFilters();
     }
 }

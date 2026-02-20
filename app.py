@@ -134,15 +134,16 @@ def get_matches():
 
         col_map = {
             1: 'ssn_match', 2: 'name_score', 3: 'address_score',
-            4: 'recommendation', 5: 'canvas_name', 8: 'dec_name'
+            4: 'recommendation', 5: 'canvas_name', 8: 'canvas_id',
+            9: 'dec_name', 13: 'jib', 14: 'rev', 15: 'vendor'
         }
         if order_col in col_map:
             df_filtered = df_filtered.sort_values(
                 col_map[order_col], ascending=(order_dir == 'asc'), na_position='last'
             )
 
-        # Paginate
-        df_page = df_filtered.iloc[start:start + length]
+        # Paginate (-1 means all)
+        df_page = df_filtered.iloc[start:] if length == -1 else df_filtered.iloc[start:start + length]
 
         # Build response
         data = df_page.fillna('').to_dict('records')
