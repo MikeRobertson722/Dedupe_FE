@@ -2,6 +2,7 @@ let table;
 let selectedRows = new Set();
 let editModal;
 let recommendationValues = [];
+let pendingCount = 0;
 
 // Color map for recommendation badges
 const REC_COLORS = {
@@ -55,6 +56,57 @@ $(document).ready(function() {
         table.page.len(size).draw();
     });
 
+    // Auto-apply filters on dropdown change
+    $('#recommendationFilter, #ssnFilter, #minNameScore, #minAddrScore').on('change', function() {
+        applyFilters();
+    });
+
+    // Import type dropdown - open file picker on selection
+    $('#importType').on('change', function() {
+        if ($(this).val()) {
+            $('#importFile').val('');
+            $('#importFile').trigger('click');
+        }
+    });
+
+    // File selected - read Canvas IDs and import
+    $('#importFile').on('change', function() {
+        const file = this.files[0];
+        const field = $('#importType').val();
+        if (!file || !field) return;
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const text = e.target.result;
+            // Parse lines, split by comma/newline, trim, filter blanks
+            const ids = text.split(/[\r\n,]+/).map(s => s.trim()).filter(s => s && s !== '');
+            if (ids.length === 0) {
+                showToast('No Canvas IDs found in file', 'warning');
+                $('#importType').val('');
+                return;
+            }
+
+            $.ajax({
+                url: '/api/import_ids',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ field: field, canvas_ids: ids }),
+                success: function(data) {
+                    showToast(data.message, 'success');
+                    pendingCount = data.pending_count || 0;
+                    updateSaveBtn();
+                    table.ajax.reload();
+                },
+                error: function(xhr) {
+                    const msg = xhr.responseJSON ? xhr.responseJSON.error : 'Import failed';
+                    showToast(msg, 'error');
+                }
+            });
+            $('#importType').val('');
+        };
+        reader.readAsText(file);
+    });
+
     // Row selection
     $('#matchesTable tbody').on('change', '.row-select', function() {
         const id = $(this).data('row-id');
@@ -62,6 +114,24 @@ $(document).ready(function() {
         checked ? selectedRows.add(id) : selectedRows.delete(id);
         $(this).closest('tr').toggleClass('row-selected', checked);
         updateSelectionInfo();
+    });
+
+    // JIB/Rev/Vendor checkbox toggle — in-memory only until Save
+    $('#matchesTable tbody').on('change', '.field-check', function() {
+        const rowId = $(this).data('row-id');
+        const field = $(this).data('field');
+        const value = $(this).prop('checked') ? 1 : 0;
+        $.ajax({
+            url: '/api/update',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ row_id: rowId, field: field, value: value }),
+            success: function(data) {
+                pendingCount = data.pending_count || 0;
+                updateSaveBtn();
+            },
+            error: function() { showToast('Toggle failed', 'error'); }
+        });
     });
 });
 
@@ -99,6 +169,7 @@ function initTable() {
                     return `${d.canvas_city || ''}, ${d.canvas_state || ''} ${d.canvas_zip || ''}`;
                 }
             },
+            { data: 'canvas_id' },
             { data: 'dec_name', className: 'truncate' },
             { data: 'dec_address', className: 'truncate' },
             {
@@ -108,6 +179,27 @@ function initTable() {
                 }
             },
             { data: 'dec_hdrcode' },
+            {
+                data: 'jib', orderable: false, className: 'text-center',
+                render: function(data, type, row) {
+                    const checked = data ? 'checked' : '';
+                    return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="jib" ${checked}>`;
+                }
+            },
+            {
+                data: 'rev', orderable: false, className: 'text-center',
+                render: function(data, type, row) {
+                    const checked = data ? 'checked' : '';
+                    return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="rev" ${checked}>`;
+                }
+            },
+            {
+                data: 'vendor', orderable: false, className: 'text-center',
+                render: function(data, type, row) {
+                    const checked = data ? 'checked' : '';
+                    return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="vendor" ${checked}>`;
+                }
+            },
             {
                 data: null, orderable: false,
                 render: function(data) {
@@ -364,11 +456,49 @@ function bulkApprove() {
     });
 }
 
+function exportSelected() {
+    if (selectedRows.size === 0) {
+        showToast('No records selected', 'warning');
+        return;
+    }
+    const ids = Array.from(selectedRows).join(',');
+    window.location.href = `/api/export_selected?row_ids=${ids}`;
+}
+
 function exportData() {
     const rec = $('#recommendationFilter').val();
     let url = '/api/export';
     if (rec) url += `?recommendation=${encodeURIComponent(rec)}`;
     window.location.href = url;
+}
+
+function saveChanges() {
+    if (pendingCount === 0) {
+        showToast('Nothing to save', 'info');
+        return;
+    }
+
+    $.ajax({
+        url: '/api/save_changes',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({}),
+        success: function(data) {
+            showToast(data.message, 'success');
+            pendingCount = 0;
+            updateSaveBtn();
+        },
+        error: function(xhr) {
+            const msg = xhr.responseJSON ? xhr.responseJSON.error : 'Save failed';
+            showToast(msg, 'error');
+        }
+    });
+}
+
+function updateSaveBtn() {
+    const btn = $('#saveChangesBtn');
+    btn.prop('disabled', pendingCount === 0);
+    btn.find('.save-count').text(pendingCount > 0 ? ` (${pendingCount})` : '');
 }
 
 function showToast(msg, type) {
