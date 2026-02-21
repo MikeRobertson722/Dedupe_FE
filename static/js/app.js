@@ -52,7 +52,7 @@ $(document).ready(function() {
 
 
     // Auto-apply filters on dropdown change
-    $('#recommendationFilter, #ssnFilter, #minNameScore, #minAddrScore').on('change', function() {
+    $('#recommendationFilter, #ssnFilter, #minNameScore, #maxNameScore, #minAddrScore, #maxAddrScore').on('change', function() {
         applyFilters();
     });
 
@@ -226,8 +226,12 @@ function initTable() {
                 d.ssn_match = $('#ssnFilter').val();
                 var minName = $('#minNameScore').val();
                 if (minName) d.min_name_score = minName;
+                var maxName = $('#maxNameScore').val();
+                if (maxName) d.max_name_score = maxName;
                 var minAddr = $('#minAddrScore').val();
                 if (minAddr) d.min_addr_score = minAddr;
+                var maxAddr = $('#maxAddrScore').val();
+                if (maxAddr) d.max_addr_score = maxAddr;
             }
         },
         columns: [
@@ -300,6 +304,21 @@ function initTable() {
                 if (selectedRows.has(id)) {
                     $(this).prop('checked', true);
                     $(this).closest('tr').addClass('row-selected');
+                }
+            });
+
+            // Highlight rows with "trust" in Canvas Name or Address
+            $('#matchesTable tbody tr').each(function() {
+                const rowData = table.row(this).data();
+                if (rowData) {
+                    const canvasName = (rowData.canvas_name || '').toLowerCase();
+                    const canvasAddr = (rowData.canvas_address || '').toLowerCase();
+                    const combined = canvasName + ' ' + canvasAddr;
+
+                    if (combined.includes('trust') || combined.includes('trst') || combined.includes(' tr ')) {
+                        $(this).addClass('trust-highlight');
+                        console.log('Trust row found:', rowData.canvas_name, '|', rowData.canvas_address);
+                    }
                 }
             });
         }
@@ -447,7 +466,9 @@ function clearFilters() {
     $('#recommendationFilter').val('');
     $('#ssnFilter').val('');
     $('#minNameScore').val('');
+    $('#maxNameScore').val('');
     $('#minAddrScore').val('');
+    $('#maxAddrScore').val('');
     applyFilters();
 }
 
@@ -641,7 +662,7 @@ function showToast(msg, type) {
     setTimeout(() => toast.fadeOut(300, function() { $(this).remove(); }), 2500);
 }
 
-// Toast styles
+// Toast styles and trust highlight
 $('<style>').text(`
     .toast-msg {
         position: fixed; top: 70px; right: 20px; z-index: 10000;
@@ -652,5 +673,13 @@ $('<style>').text(`
     @keyframes slideIn {
         from { transform: translateX(300px); opacity: 0; }
         to { transform: translateX(0); opacity: 1; }
+    }
+    #matchesTable tbody tr.trust-highlight,
+    #matchesTable tbody tr.trust-highlight td {
+        background-color: #ffe0b2 !important;
+    }
+    #matchesTable tbody tr.trust-highlight:hover,
+    #matchesTable tbody tr.trust-highlight:hover td {
+        background-color: #ffcc80 !important;
     }
 `).appendTo('head');

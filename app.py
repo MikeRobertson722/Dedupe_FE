@@ -95,7 +95,9 @@ def get_matches():
         recommendation_filter = request.args.get('recommendation', default='')
         ssn_filter = request.args.get('ssn_match', default='')
         min_name_score = request.args.get('min_name_score', type=float, default=None)
+        max_name_score = request.args.get('max_name_score', type=float, default=None)
         min_addr_score = request.args.get('min_addr_score', type=float, default=None)
+        max_addr_score = request.args.get('max_addr_score', type=float, default=None)
 
         # Apply filters
         mask = pd.Series(True, index=df.index)
@@ -112,9 +114,13 @@ def get_matches():
 
         if min_name_score is not None:
             mask &= df['name_score'] >= min_name_score
+        if max_name_score is not None:
+            mask &= df['name_score'] <= max_name_score
 
         if min_addr_score is not None:
             mask &= df['address_score'] >= min_addr_score
+        if max_addr_score is not None:
+            mask &= df['address_score'] <= max_addr_score
 
         df_filtered = df[mask]
 
