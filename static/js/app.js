@@ -161,7 +161,27 @@ $(document).ready(function() {
     // Handle data source switching
     $('#datasourceSelector').on('change', function() {
         const sourceId = $(this).val();
-        if (sourceId) {
+        if (!sourceId) return;
+        const dsType = $(this).find(':selected').data('type');
+
+        if (dsType === 'excel') {
+            // Open native file picker, then switch with chosen path
+            $.get('/api/browse_excel', function(resp) {
+                if (resp.cancelled) {
+                    loadDataSources(); // reset dropdown
+                    return;
+                }
+                if (resp.error) {
+                    showToast(resp.error, 'error');
+                    loadDataSources();
+                    return;
+                }
+                switchDataSource(sourceId, resp.file_path);
+            }).fail(function() {
+                showToast('Could not open file browser', 'error');
+                loadDataSources();
+            });
+        } else {
             switchDataSource(sourceId);
         }
     });
@@ -291,6 +311,10 @@ $(document).ready(function() {
     // Ctrl+C / Cmd+C: copy selected cell values
     $(document).on('keydown', function(e) {
         if ((e.ctrlKey || e.metaKey) && e.key === 'c' && $('.cell-selected').length > 0) {
+            var sel = window.getSelection();
+            if (sel && sel.toString().length > 0) {
+                return; // let browser copy the highlighted text
+            }
             e.preventDefault();
             const vals = $('.cell-selected').map(function() {
                 return $(this).text().trim();
@@ -407,8 +431,21 @@ function initTable() {
                 }
             },
             { name: 'ssn', data: 'ssn_match', render: ssnBadge, width: '42px' },           // 1: SSN
-            { name: 'name_score', data: 'name_score', render: scoreBadge, width: '42px' },  // 2: Name
-            { name: 'addr_score', data: 'address_score', render: scoreBadge, width: '42px' }, // 3: Addr
+            { name: 'name_score', data: 'name_score', render: scoreBadge, width: '42px',
+              createdCell: function(td, cellData) {
+                  if (cellData !== '' && cellData !== null && cellData < 45) {
+                      $(td).attr('title', 'This may be low because name may exist in address field');
+                  }
+              }
+            },  // 2: Name
+            { name: 'addr_score', data: 'address_score', render: scoreBadge, width: '42px',
+              createdCell: function(td, cellData, rowData) {
+                  if (cellData !== '' && cellData !== null && cellData > 45 &&
+                      rowData.recommendation && rowData.recommendation.toUpperCase().indexOf('NEW ADDRESS') !== -1) {
+                      $(td).attr('title', 'May have status of new address since numbers in address may not match');
+                  }
+              }
+            }, // 3: Addr
             { name: 'recommendation', data: 'recommendation', render: recBadge, className: 'rec-col', width: '310px' }, // 4: Rec
             { name: 'canvas_name', data: 'canvas_name', className: 'resizable', createdCell: function(td, cellData) {
                 if (cellData && DO_NOT_USE_RE.test(cellData)) {
@@ -426,7 +463,12 @@ function initTable() {
                     return `${d.canvas_city || ''}, ${d.canvas_state || ''} ${d.canvas_zip || ''}`;
                 }
             },
-            { name: 'canvas_id', data: 'canvas_id', width: '75px' },                       // 8: Canvas ID
+            { name: 'canvas_id', data: 'canvas_id', width: '95px',                          // 8: Canvas ID
+              render: function(data, type, d) {
+                  var seq = d.canvas_addrseq || '';
+                  return seq ? data + '-' + seq : (data || '');
+              }
+            },
             { name: 'dec_name', data: 'dec_name', className: 'resizable', createdCell: function(td, cellData) {
                 if (cellData && DO_NOT_USE_RE.test(cellData)) {
                     $(td).addClass('do-not-use-cell');
@@ -706,7 +748,7 @@ function editRecord(rowId) {
         $('#editCanvasCity').text(d.canvas_city || '');
         $('#editCanvasState').text(d.canvas_state || '');
         $('#editCanvasZip').text(d.canvas_zip || '');
-        $('#editCanvasId').text(d.canvas_id || '');
+        $('#editCanvasId').text(d.canvas_addrseq ? (d.canvas_id + '-' + d.canvas_addrseq) : (d.canvas_id || ''));
         $('#editCanvasSSN').text(d.canvas_ssn || '');
 
         // DEC side
@@ -866,29 +908,42 @@ function updateSaveBtn() {
     btn.find('.save-count').text(pendingCount > 0 ? ` (${pendingCount})` : '');
 }
 
+// Additional connection targets (no backend yet — placeholders for future use)
+const EXTRA_DATASOURCES = [
+    { id: 'mssql_cloud', name: 'MS SQL Server (Cloud)', type: 'mssql' },
+    { id: 'mssql_local', name: 'MS SQL Server (Local)', type: 'mssql' },
+    { id: 'oracle_cloud', name: 'Oracle (Cloud)', type: 'oracle' },
+    { id: 'oracle_local', name: 'Oracle (Local)', type: 'oracle' }
+];
+
 function loadDataSources() {
     $.get('/api/datasources', function(data) {
-        const selector = $('#datasourceSelector');
-        selector.empty();
+        const allSources = data.datasources.concat(EXTRA_DATASOURCES);
+        const selectors = ['#datasourceSelector', '#targetDatasourceSelector'];
+        selectors.forEach(function(sel) {
+            const $sel = $(sel);
+            $sel.empty();
 
-        data.datasources.forEach(function(ds) {
-            const option = $('<option></option>')
-                .val(ds.id)
-                .text(ds.name)
-                .data('type', ds.type);
+            allSources.forEach(function(ds) {
+                const option = $('<option></option>')
+                    .val(ds.id)
+                    .text(ds.name)
+                    .data('type', ds.type);
 
-            if (ds.id === data.active) {
-                option.prop('selected', true);
-            }
+                if (ds.id === data.active) {
+                    option.prop('selected', true);
+                }
 
-            selector.append(option);
+                $sel.append(option);
+            });
         });
     }).fail(function() {
         $('#datasourceSelector').html('<option value="">Error loading sources</option>');
+        $('#targetDatasourceSelector').html('<option value="">Error loading sources</option>');
     });
 }
 
-function switchDataSource(sourceId) {
+function switchDataSource(sourceId, filePath) {
     if (!confirm('Switch data source? This will reload all data.')) {
         loadDataSources(); // Reset dropdown to current source
         return;
@@ -896,11 +951,14 @@ function switchDataSource(sourceId) {
 
     showToast('Switching data source...', 'info');
 
+    var payload = { source_id: sourceId };
+    if (filePath) payload.file_path = filePath;
+
     $.ajax({
         url: '/api/switch_datasource',
         method: 'POST',
         contentType: 'application/json',
-        data: JSON.stringify({ source_id: sourceId }),
+        data: JSON.stringify(payload),
         success: function(data) {
             showToast(data.message + ` (${data.records.toLocaleString()} records)`, 'success');
 

@@ -13,20 +13,23 @@ class DataSource:
     @staticmethod
     def load_from_excel(file_path: str) -> pd.DataFrame:
         """
-        Load data from Excel file
+        Load data from Excel or CSV file
 
         Args:
-            file_path: Path to Excel file
+            file_path: Path to Excel or CSV file
 
         Returns:
             DataFrame with canvas_dec_matches data
         """
         file_path = Path(file_path)
         if not file_path.exists():
-            print(f"Warning: Excel file not found: {file_path}")
+            print(f"Warning: File not found: {file_path}")
             return pd.DataFrame()
 
-        df = pd.read_excel(file_path)
+        if file_path.suffix.lower() == '.csv':
+            df = pd.read_csv(file_path)
+        else:
+            df = pd.read_excel(file_path)
         return DataSource._normalize_dataframe(df)
 
     @staticmethod

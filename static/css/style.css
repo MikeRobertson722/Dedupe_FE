@@ -73,7 +73,6 @@ body {
 td.rec-col { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
 
 /* Column resize handles */
-#matchesTable thead th { position: relative; }
 .col-resize-handle {
     position: absolute;
     right: 0;

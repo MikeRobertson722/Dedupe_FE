@@ -605,6 +605,7 @@ def switch_datasource():
     try:
         data = request.json
         source_id = data.get('source_id')
+        file_path = data.get('file_path')  # optional: override file path for excel
 
         if not source_id:
             return jsonify({'error': 'source_id is required'}), 400
@@ -619,6 +620,10 @@ def switch_datasource():
         # Validate source exists
         if source_id not in ds_config.get('datasources', {}):
             return jsonify({'error': f'Data source "{source_id}" not found'}), 404
+
+        # If a file_path was provided (Excel file picker), update the config
+        if file_path and ds_config['datasources'][source_id].get('source_type') == 'excel':
+            ds_config['datasources'][source_id]['file_path'] = file_path
 
         # Update active source
         ds_config['active'] = source_id
@@ -644,6 +649,38 @@ def switch_datasource():
             'records': len(df),
             'message': f'Switched to {DATA_CONFIG.get("name", source_id)}'
         })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/browse_excel')
+def browse_excel():
+    """Open a native file dialog to pick an Excel file"""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        default_dir = r'C:\ClaudeMain\BA_Dedup2\BA_Dedup2\output'
+        if not Path(default_dir).exists():
+            default_dir = str(Path(__file__).parent)
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+
+        file_path = filedialog.askopenfilename(
+            title='Select Excel File',
+            initialdir=default_dir,
+            filetypes=[('Excel files', '*.xlsx *.xls'), ('CSV files', '*.csv'), ('All files', '*.*')]
+        )
+
+        root.destroy()
+
+        if not file_path:
+            return jsonify({'cancelled': True})
+
+        return jsonify({'file_path': file_path})
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500

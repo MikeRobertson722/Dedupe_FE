@@ -18,7 +18,13 @@
             </span>
             <div class="d-flex align-items-center gap-2">
                 <i class="fas fa-database text-warning"></i>
+                <span class="text-light small fw-bold">Source</span>
                 <select id="datasourceSelector" class="form-select form-select-sm bg-secondary text-white border-secondary" style="width: auto; min-width: 180px;">
+                    <option value="">Loading...</option>
+                </select>
+                <i class="fas fa-database text-warning ms-2"></i>
+                <span class="text-light small fw-bold">Target</span>
+                <select id="targetDatasourceSelector" class="form-select form-select-sm bg-secondary text-white border-secondary" style="width: auto; min-width: 180px;">
                     <option value="">Loading...</option>
                 </select>
                 <button class="btn btn-outline-light btn-sm" onclick="refreshData()">
@@ -35,34 +41,6 @@
     </nav>
 
     <div class="container-fluid mt-2 flex-shrink-0" id="headerSection">
-        <!-- Stats Row -->
-        <div class="row mb-3" id="statsCards">
-            <div class="col-md-4">
-                <div class="card stat-card bg-primary text-white" onclick="filterByStat('all')" style="cursor:pointer">
-                    <div class="card-body py-2">
-                        <div class="stat-label">Total Records</div>
-                        <div class="stat-value" id="totalRecords">-</div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card stat-card bg-success text-white" onclick="filterByStat('ssn_yes')" style="cursor:pointer">
-                    <div class="card-body py-2">
-                        <div class="stat-label">SSN Perfect</div>
-                        <div class="stat-value" id="ssnPerfect">-</div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card stat-card bg-danger text-white" onclick="filterByStat('ssn_no')" style="cursor:pointer">
-                    <div class="card-body py-2">
-                        <div class="stat-label">No SSN Match</div>
-                        <div class="stat-value" id="ssnNone">-</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
         <!-- Recommendation Breakdown -->
         <div class="row mb-3" id="recBreakdown"></div>
 
@@ -296,17 +274,31 @@
                     <div class="accordion" id="helpAccordion">
 
                         <div class="accordion-item">
-                            <h2 class="accordion-header"><button class="accordion-button py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpFilter"><i class="fas fa-filter me-2 text-primary"></i> Filtering &amp; Searching</button></h2>
-                            <div id="helpFilter" class="accordion-collapse collapse show" data-bs-parent="#helpAccordion">
+                            <h2 class="accordion-header"><button class="accordion-button py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpDataSources"><i class="fas fa-database me-2 text-warning"></i> Data Sources</button></h2>
+                            <div id="helpDataSources" class="accordion-collapse collapse show" data-bs-parent="#helpAccordion">
+                                <div class="accordion-body py-2">
+                                    <ul class="mb-0">
+                                        <li><strong>Source</strong> &mdash; Select the database to read match data from. Switching reloads all data after confirmation.</li>
+                                        <li><strong>Target</strong> &mdash; Select the destination database for approved records (future functionality).</li>
+                                        <li><strong>Available sources</strong> &mdash; SQLite (Local), MS SQL Server (Cloud/Local), Oracle (Cloud/Local).</li>
+                                        <li><strong>Refresh</strong> (<i class="fas fa-sync-alt"></i>) &mdash; Reloads data from the current source without changing selection.</li>
+                                        <li><strong>Dev Notes</strong> (<i class="fas fa-file-word"></i>) &mdash; Opens the development notes document in Word.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="accordion-item">
+                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpFilter"><i class="fas fa-filter me-2 text-primary"></i> Filtering &amp; Searching</button></h2>
+                            <div id="helpFilter" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
                                         <li><strong>Recommendation filter</strong> &mdash; Multi-select dropdown to filter by one or more recommendation types. No checkboxes checked = show all.</li>
                                         <li><strong>SSN Match</strong> &mdash; Filter by Yes (100), Partial (1-99), or No (0).</li>
                                         <li><strong>Name / Address score</strong> &mdash; Set min and max thresholds for Name Score and Address Score.</li>
-                                        <li><strong>Search box</strong> &mdash; Type to search across all columns.</li>
-                                        <li><strong>Stat cards</strong> &mdash; Click Total Records, SSN Perfect, or No SSN Match to quick-filter.</li>
-                                        <li><strong>Recommendation cards</strong> &mdash; Click any recommendation card to filter to that type.</li>
-                                        <li><strong>Clear</strong> &mdash; Resets all filters at once.</li>
+                                        <li><strong>Search box</strong> &mdash; Type to search across all visible columns (server-side, case-insensitive).</li>
+                                        <li><strong>Recommendation cards</strong> &mdash; Click any recommendation card to filter to that type. Resets page to first page.</li>
+                                        <li><strong>Clear</strong> &mdash; Resets all filters at once and clears row selections.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -318,10 +310,11 @@
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
                                         <li><strong>Page size</strong> &mdash; Show 100, 500, 1,000, 5,000, or All Selected Recs.</li>
-                                        <li><strong>Column sorting</strong> &mdash; Click any column header to sort ascending/descending.</li>
-                                        <li><strong>Column reordering</strong> &mdash; Drag column headers to rearrange the table layout.</li>
-                                        <li><strong>Column resizing</strong> &mdash; Drag the right edge of name/address column headers to adjust width.</li>
-                                        <li><strong>Show/Hide Columns</strong> &mdash; Dropdown to toggle visibility of any column, color-coded by group.</li>
+                                        <li><strong>Column sorting</strong> &mdash; Click any column header to sort ascending/descending (server-side).</li>
+                                        <li><strong>Column reordering</strong> &mdash; Drag column headers to rearrange the table layout. The checkbox column (left) and actions column (right) are fixed in place.</li>
+                                        <li><strong>Column resizing</strong> &mdash; Drag the right edge of name/address column headers to adjust width. Only columns with text content (Canvas Name, Canvas Addr, Canvas City/St/Zip, DEC Name, DEC Addr, DEC City/St/Zip) are resizable.</li>
+                                        <li><strong>Show/Hide Columns</strong> &mdash; Dropdown to toggle visibility of any column. Columns are color-coded: <span style="background:#1e3a8a;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">Canvas</span> <span style="background:#9b4d6e;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">DEC</span> <span style="background:#212529;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">General</span></li>
+                                        <li><strong>Sticky headers</strong> &mdash; Column headers stay visible when scrolling through table rows.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -333,9 +326,11 @@
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
                                         <li><strong>Row checkboxes</strong> &mdash; Select individual rows; selection persists across pages.</li>
-                                        <li><strong>Select All</strong> &mdash; Header checkbox selects/deselects all visible rows.</li>
-                                        <li><strong>Cell selection</strong> &mdash; Click a cell to highlight it. <strong>Shift+click</strong> in the same column to select a range; in a different column to select the entire row. Text is auto-selected for copying.</li>
-                                        <li><strong>Ctrl+C</strong> &mdash; Copy selected cell values to clipboard.</li>
+                                        <li><strong>Select All</strong> &mdash; Header checkbox selects/deselects all visible rows on the current page.</li>
+                                        <li><strong>Cell click</strong> &mdash; Click a cell to highlight it (blue). The cell text is ready to copy.</li>
+                                        <li><strong>Shift+click (same column)</strong> &mdash; Select a range of cells in that column from the last-clicked cell to the current one.</li>
+                                        <li><strong>Shift+click (different column)</strong> &mdash; Select the entire row of the clicked cell; text is auto-selected for native copy.</li>
+                                        <li><strong>Ctrl+C</strong> &mdash; Copy all highlighted cell values to clipboard (one value per line).</li>
                                     </ul>
                                 </div>
                             </div>
@@ -346,10 +341,11 @@
                             <div id="helpEdit" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Edit button</strong> (<i class="fas fa-edit"></i>) &mdash; Opens a side-by-side modal showing Canvas (read-only) vs DEC (editable) fields with match scores.</li>
-                                        <li><strong>Quick Approve</strong> (<i class="fas fa-check"></i>) &mdash; Instantly sets a single record's recommendation to APPROVED.</li>
-                                        <li><strong>Approve Selected</strong> &mdash; Bulk-approves all checkbox-selected rows.</li>
-                                        <li><strong>JIB / Rev / Vendor checkboxes</strong> &mdash; Toggle directly in the table. If multiple cells are selected, the toggle applies to all selected rows.</li>
+                                        <li><strong>Edit button</strong> (<i class="fas fa-edit"></i>) &mdash; Opens a side-by-side modal showing Canvas (read-only) vs DEC (editable) fields with match scores. Edit DEC name, address, city, state, zip, and recommendation.</li>
+                                        <li><strong>Quick Approve</strong> (<i class="fas fa-check"></i>) &mdash; Instantly sets a single record's recommendation to APPROVED without opening the edit modal.</li>
+                                        <li><strong>Approve Selected</strong> &mdash; Bulk-approves all checkbox-selected rows in one action.</li>
+                                        <li><strong>JIB / Rev / Vendor checkboxes</strong> &mdash; Toggle BA type flags directly in the table. If multiple cells are selected in the column, the toggle applies to all selected rows at once.</li>
+                                        <li><strong>Save BA Types</strong> &mdash; Persists all pending JIB/Rev/Vendor changes back to the database. The badge counter shows how many changes are pending.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -360,10 +356,9 @@
                             <div id="helpImportExport" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Import Canvas IDs</strong> &mdash; Select JIB, Rev, or Vendor from the dropdown, then pick a CSV/TXT file of Canvas IDs to bulk-set that flag.</li>
-                                        <li><strong>Export filtered</strong> &mdash; Downloads all currently filtered records as an Excel file (uses the Export button in the toolbar).</li>
-                                        <li><strong>Export selected</strong> (<i class="fas fa-download"></i>) &mdash; Downloads only checkbox-selected rows as Excel.</li>
-                                        <li><strong>Save BA Types</strong> &mdash; Persists all pending JIB/Rev/Vendor changes back to the database. The badge shows how many changes are pending.</li>
+                                        <li><strong>Import Canvas IDs</strong> &mdash; Select JIB, Rev, or Vendor from the BA type dropdown, then pick a CSV/TXT file containing Canvas IDs (one per line) to bulk-set that flag.</li>
+                                        <li><strong>Export filtered</strong> &mdash; Downloads all currently filtered records as an Excel file (.xlsx) using the Export button in the toolbar.</li>
+                                        <li><strong>Export selected</strong> (<i class="fas fa-download"></i>) &mdash; Downloads only checkbox-selected rows as Excel (.xlsx).</li>
                                     </ul>
                                 </div>
                             </div>
@@ -376,10 +371,28 @@
                                     <ul class="mb-0">
                                         <li><span class="badge" style="background:#ffe0b2;color:#333;">Orange rows</span> &mdash; Canvas name or address contains "trust", "trst", or "tr".</li>
                                         <li><span class="badge" style="background:#f8d7da;color:#333;">Red cells</span> &mdash; Cell contains "DO NOT USE" (or variations: DON'T USE, DNU, etc.).</li>
-                                        <li><strong>Score badges</strong> &mdash; <span class="badge bg-success">100</span> perfect, <span class="badge" style="background:#0d6efd">90+</span> high, <span class="badge bg-warning text-dark">75+</span> medium, <span class="badge bg-danger">&lt;75</span> low.</li>
-                                        <li><strong>SSN badges</strong> &mdash; <span class="badge bg-success">Yes</span> = 100, <span class="badge bg-danger">No</span> = 0.</li>
-                                        <li><strong>Recommendation badges</strong> &mdash; Each recommendation type has a unique color.</li>
+                                        <li><strong>Score badges</strong> &mdash; <span class="badge bg-success">100</span> perfect, <span class="badge" style="background:#0d6efd;color:#fff;">90+</span> high, <span class="badge bg-warning text-dark">75+</span> medium, <span class="badge bg-danger">&lt;75</span> low.</li>
+                                        <li><strong>Name score tooltip</strong> &mdash; Hover over a Name Score below 45 to see a tooltip explaining the low score may be because the name exists in the address field.</li>
+                                        <li><strong>SSN badges</strong> &mdash; <span class="badge bg-success">Yes</span> = 100 (perfect match), <span class="badge bg-danger">No</span> = 0 (no match).</li>
+                                        <li><strong>Recommendation badges</strong> &mdash; Each recommendation type has a unique color for quick visual identification.</li>
+                                        <li><strong>Cell selection highlight</strong> &mdash; <span style="background:#b3d9ff;padding:1px 6px;border:1px solid #0d6efd;font-size:0.75rem;">Blue highlight</span> on clicked/selected cells.</li>
                                     </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="accordion-item">
+                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpKeyboard"><i class="fas fa-keyboard me-2 text-secondary"></i> Keyboard Shortcuts</button></h2>
+                            <div id="helpKeyboard" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                                <div class="accordion-body py-2">
+                                    <table class="table table-sm table-bordered mb-0" style="font-size:0.8rem;">
+                                        <thead class="table-light"><tr><th style="width:35%">Shortcut</th><th>Action</th></tr></thead>
+                                        <tbody>
+                                            <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td><td>Copy selected cell values to clipboard</td></tr>
+                                            <tr><td><kbd>Shift</kbd>+Click (same col)</td><td>Select range of cells in a column</td></tr>
+                                            <tr><td><kbd>Shift</kbd>+Click (diff col)</td><td>Select entire row</td></tr>
+                                        </tbody>
+                                    </table>
                                 </div>
                             </div>
                         </div>

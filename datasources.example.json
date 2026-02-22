@@ -8,7 +8,7 @@
       "file_path": "C:\\path\\to\\your\\canvas_dec_matches.xlsx"
     },
     "sqlite": {
-      "name": "SQLite (Local DB)",
+      "name": "SQLite (Local)",
       "source_type": "sqlite",
       "db_path": "C:\\path\\to\\your\\database.db",
       "table_name": "canvas_dec_matches"
