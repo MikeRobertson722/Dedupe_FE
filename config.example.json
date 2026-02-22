@@ -1,0 +1,25 @@
+{
+  "_comment": "Copy this file to config.json and update with your actual configuration",
+
+  "source_type": "excel",
+  "file_path": "C:\\path\\to\\your\\canvas_dec_matches.xlsx",
+
+  "_comment_sqlite": "Example SQLite configuration",
+  "_sqlite_example": {
+    "source_type": "sqlite",
+    "db_path": "C:\\path\\to\\your\\database.db",
+    "table_name": "canvas_dec_matches"
+  },
+
+  "_comment_snowflake": "Example Snowflake configuration",
+  "_snowflake_example": {
+    "source_type": "snowflake",
+    "account": "your_account_identifier",
+    "user": "your_username",
+    "password": "your_password",
+    "database": "your_database",
+    "schema": "your_schema",
+    "table": "canvas_dec_matches",
+    "warehouse": "your_warehouse"
+  }
+}

@@ -1,22 +1,54 @@
 """
 BA Deduplication Review Application
-Web interface for reviewing and updating canvas_dec_matches.xlsx data
+Web interface for reviewing and updating canvas_dec_matches data from multiple sources
 """
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, Response
 import pandas as pd
 import sqlite3
 import threading
+import json
 from pathlib import Path
 from datetime import datetime
+from data_loader import load_data, save_data
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'dev-secret-key-change-in-production'
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.jinja_env.auto_reload = True
 
-# Configuration
-EXCEL_FILE = Path(r'C:\ClaudeMain\BA_Dedup2\BA_Dedup2\output\canvas_dec_matches.xlsx')
+
+@app.after_request
+def add_no_cache_headers(response):
+    """Prevent browser from caching API responses"""
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
+# Load data source configurations
+DATASOURCES_FILE = Path(__file__).parent / 'datasources.json'
+if not DATASOURCES_FILE.exists():
+    # Fallback to old config.json if datasources.json doesn't exist
+    CONFIG_FILE = Path('config.json')
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, 'r') as f:
+            DATA_CONFIG = json.load(f)
+        _active_source = 'default'
+        _datasources = {'default': DATA_CONFIG}
+    else:
+        raise FileNotFoundError("Neither datasources.json nor config.json found")
+else:
+    with open(DATASOURCES_FILE, 'r') as f:
+        _ds_config = json.load(f)
+        _datasources = _ds_config.get('datasources', {})
+        _active_source = _ds_config.get('active', list(_datasources.keys())[0])
+        DATA_CONFIG = _datasources.get(_active_source, {})
+
+# Legacy DB path for update_log (still using SQLite for audit trail)
 DB_PATH = r'C:\ClaudeMain\BA_Dedup2\BA_Dedup2\ba_dedup.db'
 
-# In-memory cache to avoid re-reading Excel on every request
+# In-memory cache to avoid re-reading data source on every request
 _df_cache = None
 _df_cache_time = None
 
@@ -31,29 +63,24 @@ def get_db_connection():
 
 
 def load_excel_data(force_reload=False):
-    """Load data from Excel file, cached in memory"""
+    """Load data from configured source, cached in memory"""
     global _df_cache, _df_cache_time
 
-    if not EXCEL_FILE.exists():
-        return pd.DataFrame()
-
     if _df_cache is None or force_reload:
-        _df_cache = pd.read_excel(EXCEL_FILE)
-        for col in ('jib', 'rev', 'vendor'):
-            if col not in _df_cache.columns:
-                _df_cache[col] = 0
+        _df_cache = load_data(DATA_CONFIG)
         _df_cache_time = datetime.now()
 
     return _df_cache
 
 
 def save_excel_data(df):
-    """Save DataFrame back to Excel and update cache"""
+    """Save DataFrame back to configured data source and update cache"""
     global _df_cache
     _df_cache = df
-    # Write Excel in background thread so the API response returns immediately
+    # Write to data source in background thread so the API response returns immediately
     df_copy = df.copy()
-    threading.Thread(target=lambda: df_copy.to_excel(EXCEL_FILE, index=False), daemon=True).start()
+    config_copy = DATA_CONFIG.copy()
+    threading.Thread(target=lambda: save_data(df_copy, config_copy), daemon=True).start()
 
 
 @app.route('/')
@@ -103,7 +130,9 @@ def get_matches():
         mask = pd.Series(True, index=df.index)
 
         if recommendation_filter:
-            mask &= df['recommendation'] == recommendation_filter
+            rec_values = [v.strip() for v in recommendation_filter.split(',') if v.strip()]
+            if rec_values:
+                mask &= df['recommendation'].isin(rec_values)
 
         if ssn_filter == 'yes':
             mask &= df['ssn_match'] == 100
@@ -124,44 +153,49 @@ def get_matches():
 
         df_filtered = df[mask]
 
-        # Global search across all string columns
+        # Global search across all columns (vectorized per-column, much faster than row-wise apply)
         if search_value:
-            search_mask = df_filtered.astype(str).apply(
-                lambda row: row.str.contains(search_value, case=False, na=False).any(),
-                axis=1
-            )
+            search_mask = pd.Series(False, index=df_filtered.index)
+            for col in df_filtered.columns:
+                search_mask |= df_filtered[col].astype(str).str.contains(
+                    search_value, case=False, na=False
+                )
             df_filtered = df_filtered[search_mask]
 
         records_filtered = len(df_filtered)
 
-        # Sorting
+        # Sorting (use column data name so it works after ColReorder drag)
         order_col = request.args.get('order[0][column]', type=int, default=None)
         order_dir = request.args.get('order[0][dir]', default='asc')
 
-        col_map = {
-            1: 'ssn_match', 2: 'name_score', 3: 'address_score',
-            4: 'recommendation', 5: 'canvas_name', 8: 'canvas_id',
-            9: 'dec_name', 13: 'jib', 14: 'rev', 15: 'vendor'
+        sortable_fields = {
+            'ssn_match', 'name_score', 'address_score', 'recommendation',
+            'canvas_name', 'canvas_address', 'canvas_city', 'canvas_id',
+            'dec_name', 'dec_address', 'dec_city', 'dec_hdrcode',
+            'jib', 'rev', 'vendor'
         }
-        if order_col in col_map:
-            df_filtered = df_filtered.sort_values(
-                col_map[order_col], ascending=(order_dir == 'asc'), na_position='last'
-            )
+        if order_col is not None:
+            col_data = request.args.get(f'columns[{order_col}][data]', default=None)
+            if col_data in sortable_fields:
+                df_filtered = df_filtered.sort_values(
+                    col_data, ascending=(order_dir == 'asc'), na_position='last'
+                )
 
         # Paginate (-1 means all)
         df_page = df_filtered.iloc[start:] if length == -1 else df_filtered.iloc[start:start + length]
 
-        # Build response
-        data = df_page.fillna('').to_dict('records')
-        for idx, (orig_idx, _) in enumerate(df_page.iterrows()):
-            data[idx]['_row_id'] = int(orig_idx)
+        # Build response — inject row IDs via the index, then fast-serialize
+        df_out = df_page.fillna('')
+        df_out['_row_id'] = df_page.index
+        data = df_out.to_dict('records')
 
-        return jsonify({
+        result = json.dumps({
             'draw': draw,
             'recordsTotal': records_total,
             'recordsFiltered': records_filtered,
             'data': data
-        })
+        }, ensure_ascii=False, default=str)
+        return Response(result, mimetype='application/json')
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -358,6 +392,16 @@ def export_selected():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/dev_notes')
+def dev_notes():
+    notes_path = Path('Things to consider.docx').resolve()
+    if not notes_path.exists():
+        return jsonify({'error': 'Dev notes file not found'}), 404
+    import os
+    os.startfile(str(notes_path))
+    return jsonify({'message': 'Opened in Word'})
+
+
 @app.route('/api/export')
 def export_data():
     try:
@@ -365,7 +409,9 @@ def export_data():
 
         recommendation_filter = request.args.get('recommendation', default='')
         if recommendation_filter:
-            df = df[df['recommendation'] == recommendation_filter]
+            rec_values = [v.strip() for v in recommendation_filter.split(',') if v.strip()]
+            if rec_values:
+                df = df[df['recommendation'].isin(rec_values)]
 
         export_path = Path('temp_export.xlsx')
         df.to_excel(export_path, index=False)
@@ -494,6 +540,20 @@ def save_changes():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/reload', methods=['POST'])
+def reload_data():
+    """Force reload data from the configured source (clears in-memory cache)"""
+    try:
+        df = load_excel_data(force_reload=True)
+        return jsonify({
+            'success': True,
+            'records': len(df),
+            'message': f'Reloaded {len(df):,} records from {DATA_CONFIG.get("name", DATA_CONFIG.get("source_type", "source"))}'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/update_log')
 def get_update_log():
     """View recent update history"""
@@ -506,6 +566,85 @@ def get_update_log():
         rows = [dict(r) for r in cursor.fetchall()]
         conn.close()
         return jsonify(rows)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/datasources')
+def get_datasources():
+    """Get list of available data sources"""
+    try:
+        if not DATASOURCES_FILE.exists():
+            return jsonify({'error': 'datasources.json not found'}), 404
+
+        with open(DATASOURCES_FILE, 'r') as f:
+            ds_config = json.load(f)
+
+        datasources_list = []
+        for key, config in ds_config.get('datasources', {}).items():
+            datasources_list.append({
+                'id': key,
+                'name': config.get('name', key),
+                'type': config.get('source_type', 'unknown')
+            })
+
+        return jsonify({
+            'datasources': datasources_list,
+            'active': ds_config.get('active', '')
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/switch_datasource', methods=['POST'])
+def switch_datasource():
+    """Switch to a different data source"""
+    global DATA_CONFIG, _active_source, _df_cache
+
+    try:
+        data = request.json
+        source_id = data.get('source_id')
+
+        if not source_id:
+            return jsonify({'error': 'source_id is required'}), 400
+
+        if not DATASOURCES_FILE.exists():
+            return jsonify({'error': 'datasources.json not found'}), 404
+
+        # Read current config
+        with open(DATASOURCES_FILE, 'r') as f:
+            ds_config = json.load(f)
+
+        # Validate source exists
+        if source_id not in ds_config.get('datasources', {}):
+            return jsonify({'error': f'Data source "{source_id}" not found'}), 404
+
+        # Update active source
+        ds_config['active'] = source_id
+
+        # Save updated config
+        with open(DATASOURCES_FILE, 'w') as f:
+            json.dump(ds_config, f, indent=2)
+
+        # Update runtime config
+        _active_source = source_id
+        DATA_CONFIG = ds_config['datasources'][source_id]
+
+        # Clear cache to force reload
+        _df_cache = None
+
+        # Load new data to verify it works
+        df = load_excel_data(force_reload=True)
+
+        return jsonify({
+            'success': True,
+            'active': source_id,
+            'name': DATA_CONFIG.get('name', source_id),
+            'records': len(df),
+            'message': f'Switched to {DATA_CONFIG.get("name", source_id)}'
+        })
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -541,11 +680,27 @@ if __name__ == '__main__':
     print('\n' + '='*60)
     print('  BA DEDUPLICATION REVIEW APPLICATION')
     print('='*60)
-    print(f'  Excel: {EXCEL_FILE}')
-    print(f'  Database: {DB_PATH}')
+
+    # Display data source configuration
+    source_type = DATA_CONFIG.get('source_type', 'unknown').upper()
+    print(f'  Data Source: {source_type}')
+
+    if source_type == 'EXCEL':
+        print(f'  File: {DATA_CONFIG.get("file_path")}')
+    elif source_type == 'SQLITE':
+        print(f'  Database: {DATA_CONFIG.get("db_path")}')
+        print(f'  Table: {DATA_CONFIG.get("table_name")}')
+    elif source_type == 'SNOWFLAKE':
+        print(f'  Account: {DATA_CONFIG.get("account")}')
+        print(f'  Database: {DATA_CONFIG.get("database")}.{DATA_CONFIG.get("schema")}.{DATA_CONFIG.get("table")}')
+
+    print(f'  Audit Log: {DB_PATH}')
+
     df = load_excel_data()
     print(f'  Records loaded: {len(df):,}')
-    print(f'  Recommendations: {df["recommendation"].value_counts().to_dict()}')
+    if not df.empty and 'recommendation' in df.columns:
+        print(f'  Recommendations: {df["recommendation"].value_counts().to_dict()}')
+
     print(f'\n  Open: http://localhost:5000')
     print(f'  Press Ctrl+C to stop')
     print('='*60 + '\n')

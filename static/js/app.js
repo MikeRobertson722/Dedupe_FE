@@ -4,6 +4,21 @@ let editModal;
 let recommendationValues = [];
 let pendingCount = 0;
 
+// Pattern to detect "do not use" variations: DO NOT USE, DON'T USE, DONT USE, D.N.U., DNU, DNU, etc.
+const DO_NOT_USE_RE = /do\s*n[o']?t\s*use|don[''\u2019]t\s*use|d\.?n\.?u\.?(?!\w)/i;
+
+// Preferred display order for recommendations (dropdown, stats cards)
+const REC_ORDER = [
+    'NEW BA - NO DEC MATCH',
+    'LIKELY BA MATCH - SSN MATCH NAME MISMATCH',
+    'EXISTING BA - EXISTING ADDRESS',
+    'EXISTING BA - LIKELY SAME ADDRESS',
+    'EXISTING BA - NEW ADDRESS',
+    'NEW BA - NO SSN',
+    'NEW BA - INVALID SSN',
+    'APPROVED'
+];
+
 // Color map for recommendation badges
 const REC_COLORS = {
     'EXISTING BA - EXISTING ADDRESS': '#28a745',
@@ -12,24 +27,154 @@ const REC_COLORS = {
     'NEW BA - NO DEC MATCH': '#6c757d',
     'NEW BA - NO SSN': '#fd7e14',
     'NEW BA - INVALID SSN': '#dc3545',
-    'LIKELY NEW BA - SSN MATCH NAME MISMATCH': '#ffc107',
+    'LIKELY BA MATCH - SSN MATCH NAME MISMATCH': '#ffc107',
     'APPROVED': '#0d6efd'
 };
+
+function sortByRecOrder(items) {
+    return items.sort(function(a, b) {
+        const keyA = typeof a === 'string' ? a : a[0];
+        const keyB = typeof b === 'string' ? b : b[0];
+        let idxA = REC_ORDER.indexOf(keyA);
+        let idxB = REC_ORDER.indexOf(keyB);
+        if (idxA === -1) idxA = 999;
+        if (idxB === -1) idxB = 999;
+        return idxA - idxB;
+    });
+}
+
+function buildRecFilterDropdown(recs) {
+    var $c = $('#recFilterContainer');
+    var html = '<div class="dropdown rec-multi-dropdown">';
+    html += '<button class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" id="recFilterBtn">';
+    html += '<span class="rec-filter-label">All</span>';
+    html += '</button>';
+    html += '<div class="dropdown-menu rec-filter-menu">';
+    html += '<div class="d-flex gap-2 px-2 py-1 border-bottom">';
+    html += '<a href="#" class="small text-primary" onclick="toggleAllRecs(true);return false;">Select All</a>';
+    html += '<a href="#" class="small text-danger" onclick="toggleAllRecs(false);return false;">Clear All</a>';
+    html += '</div>';
+    recs.forEach(function(r) {
+        var color = REC_COLORS[r] || '#6c757d';
+        html += '<label class="dropdown-item rec-filter-item d-flex align-items-center gap-2 py-1">';
+        html += '<input type="checkbox" class="rec-check form-check-input mt-0" value="' + r + '">';
+        html += '<span class="badge" style="background-color:' + color + '; font-size:0.7rem;">' + r + '</span>';
+        html += '</label>';
+    });
+    html += '</div></div>';
+    $c.html(html);
+
+    $c.on('change', '.rec-check', function() {
+        updateRecFilterLabel();
+        applyFilters();
+    });
+}
+
+function getSelectedRecs() {
+    var checked = [];
+    $('.rec-check:checked').each(function() {
+        checked.push($(this).val());
+    });
+    return checked;
+}
+
+function updateRecFilterLabel() {
+    var checked = getSelectedRecs();
+    var label;
+    if (checked.length === 0) {
+        label = 'All';
+    } else if (checked.length === 1) {
+        label = checked[0];
+    } else {
+        label = checked.length + ' selected';
+    }
+    $('.rec-filter-label').text(label);
+}
+
+function toggleAllRecs(selectAll) {
+    $('.rec-check').prop('checked', selectAll);
+    updateRecFilterLabel();
+    applyFilters();
+}
+
+// Column visibility dropdown  [label, header color, column name]
+const COL_DEFS = [
+    ['SSN', '#212529', 'ssn'],
+    ['Name Score', '#212529', 'name_score'],
+    ['Addr Score', '#212529', 'addr_score'],
+    ['Recommendation', '#212529', 'recommendation'],
+    ['Canvas Name', '#1e3a8a', 'canvas_name'],
+    ['Canvas Addr', '#1e3a8a', 'canvas_addr'],
+    ['Canvas City/St/Zip', '#1e3a8a', 'canvas_csz'],
+    ['Canvas ID', '#1e3a8a', 'canvas_id'],
+    ['DEC Name', '#9b4d6e', 'dec_name'],
+    ['DEC Addr', '#9b4d6e', 'dec_addr'],
+    ['DEC City/St/Zip', '#9b4d6e', 'dec_csz'],
+    ['DEC Code', '#9b4d6e', 'dec_code'],
+    ['JIB', '#212529', 'jib'],
+    ['Rev', '#212529', 'rev'],
+    ['Vendor', '#212529', 'vendor']
+];
+
+function buildColVisDropdown() {
+    var html = '<div class="dropdown col-vis-dropdown">';
+    html += '<button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">';
+    html += '<i class="fas fa-columns"></i> Show/Hide Columns';
+    html += '</button>';
+    html += '<div class="dropdown-menu col-vis-menu">';
+    html += '<div class="d-flex gap-2 px-2 py-1 border-bottom">';
+    html += '<a href="#" class="small text-primary" onclick="toggleAllCols(true);return false;">Show All</a>';
+    html += '<a href="#" class="small text-danger" onclick="toggleAllCols(false);return false;">Hide All</a>';
+    html += '</div>';
+    COL_DEFS.forEach(function(def) {
+        var label = def[0], color = def[1], colName = def[2];
+        var style = color ? 'background-color:' + color + ';color:#fff;border-radius:3px;padding:1px 6px;' : '';
+        html += '<label class="dropdown-item col-vis-item d-flex align-items-center gap-2 py-1">';
+        html += '<input type="checkbox" class="col-vis-check form-check-input mt-0" data-col-name="' + colName + '" checked>';
+        html += '<span class="small" style="' + style + '">' + label + '</span>';
+        html += '</label>';
+    });
+    html += '</div></div>';
+    $('#colVisContainer').html(html);
+
+    $('#colVisContainer').on('change', '.col-vis-check', function() {
+        var colName = $(this).data('col-name');
+        var visible = $(this).prop('checked');
+        table.column(colName + ':name').visible(visible);
+    });
+}
+
+function toggleAllCols(show) {
+    $('.col-vis-check').each(function() {
+        $(this).prop('checked', show);
+        var colName = $(this).data('col-name');
+        table.column(colName + ':name').visible(show);
+    });
+}
 
 $(document).ready(function() {
     editModal = new bootstrap.Modal(document.getElementById('editModal'));
 
+    // Load available data sources
+    loadDataSources();
+
+    // Handle data source switching
+    $('#datasourceSelector').on('change', function() {
+        const sourceId = $(this).val();
+        if (sourceId) {
+            switchDataSource(sourceId);
+        }
+    });
+
     // Load recommendations for dropdowns, then init table
     $.get('/api/recommendations', function(recs) {
-        recommendationValues = recs;
+        recommendationValues = sortByRecOrder(recs.slice());
 
-        // Populate filter dropdown
-        recs.forEach(function(r) {
-            $('#recommendationFilter').append(`<option value="${r}">${r}</option>`);
-        });
+        // Build multi-select checkbox dropdown for filter
+        buildRecFilterDropdown(recommendationValues);
 
-        // Populate edit modal dropdown
-        recs.forEach(function(r) {
+        // Populate edit modal dropdown (sorted)
+        recommendationValues.forEach(function(r) {
             $('#editRecommendation').append(`<option value="${r}">${r}</option>`);
         });
         $('#editRecommendation').append('<option value="APPROVED">APPROVED</option>');
@@ -52,7 +197,7 @@ $(document).ready(function() {
 
 
     // Auto-apply filters on dropdown change
-    $('#recommendationFilter, #ssnFilter, #minNameScore, #maxNameScore, #minAddrScore, #maxAddrScore').on('change', function() {
+    $('#ssnFilter, #minNameScore, #maxNameScore, #minAddrScore, #maxAddrScore').on('change', function() {
         applyFilters();
     });
 
@@ -102,24 +247,39 @@ $(document).ready(function() {
         reader.readAsText(file);
     });
 
-    // Column-confined cell selection (click = single, Shift+click = range)
+    // Cell selection (click = single cell, Shift+click = column range with text selection)
     let lastClickedCell = null;
     $('#matchesTable').on('click', 'tbody td', function(e) {
         if ($(e.target).is('input, button, i, a')) return;
         const td = $(this);
         const colIdx = td.index();
 
-        if (e.shiftKey && lastClickedCell && lastClickedCell.colIdx === colIdx) {
-            // Shift+click: select range in same column
+        if (e.shiftKey && lastClickedCell) {
+            // Shift+click: select range in same column (or row if different column)
             const rows = $('#matchesTable tbody tr:visible');
             const startRow = rows.index(lastClickedCell.tr);
             const endRow = rows.index(td.closest('tr'));
             const lo = Math.min(startRow, endRow);
             const hi = Math.max(startRow, endRow);
             $('.cell-selected').removeClass('cell-selected');
-            rows.slice(lo, hi + 1).each(function() {
-                $(this).find('td').eq(colIdx).addClass('cell-selected');
-            });
+
+            if (lastClickedCell.colIdx === colIdx) {
+                // Same column: select range of cells in that column
+                rows.slice(lo, hi + 1).each(function() {
+                    $(this).find('td').eq(colIdx).addClass('cell-selected');
+                });
+                // Clear native selection — Ctrl+C handler copies .cell-selected
+                window.getSelection().removeAllRanges();
+            } else {
+                // Different column: select all cells in clicked row
+                td.closest('tr').find('td').addClass('cell-selected');
+                // Native select the row text
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                const range = document.createRange();
+                range.selectNodeContents(td.closest('tr')[0]);
+                sel.addRange(range);
+            }
         } else {
             // Single click: select one cell
             $('.cell-selected').removeClass('cell-selected');
@@ -219,10 +379,15 @@ function initTable() {
         processing: true,
         serverSide: true,
         autoWidth: false,
+        deferRender: true,
+        colReorder: {
+            fixedColumnsLeft: 1,
+            fixedColumnsRight: 1
+        },
         ajax: {
             url: '/api/matches',
             data: function(d) {
-                d.recommendation = $('#recommendationFilter').val();
+                d.recommendation = getSelectedRecs().join(',');
                 d.ssn_match = $('#ssnFilter').val();
                 var minName = $('#minNameScore').val();
                 if (minName) d.min_name_score = minName;
@@ -236,67 +401,99 @@ function initTable() {
         },
         columns: [
             {   // 0: Checkbox
-                data: null, orderable: false, className: 'text-center', width: '30px',
+                name: 'select', data: null, orderable: false, className: 'text-center', width: '30px',
                 render: function(data) {
                     return `<input type="checkbox" class="row-select" data-row-id="${data._row_id}">`;
                 }
             },
-            { data: 'ssn_match', render: ssnBadge, width: '42px' },           // 1: SSN
-            { data: 'name_score', render: scoreBadge, width: '42px' },         // 2: Name
-            { data: 'address_score', render: scoreBadge, width: '42px' },      // 3: Addr
-            { data: 'recommendation', render: recBadge, className: 'rec-col', width: '210px' }, // 4: Rec
-            { data: 'canvas_name', className: 'resizable' },                    // 5: Canvas Name
-            { data: 'canvas_address', className: 'resizable' },               // 6: Canvas Addr
+            { name: 'ssn', data: 'ssn_match', render: ssnBadge, width: '42px' },           // 1: SSN
+            { name: 'name_score', data: 'name_score', render: scoreBadge, width: '42px' },  // 2: Name
+            { name: 'addr_score', data: 'address_score', render: scoreBadge, width: '42px' }, // 3: Addr
+            { name: 'recommendation', data: 'recommendation', render: recBadge, className: 'rec-col', width: '310px' }, // 4: Rec
+            { name: 'canvas_name', data: 'canvas_name', className: 'resizable', createdCell: function(td, cellData) {
+                if (cellData && DO_NOT_USE_RE.test(cellData)) {
+                    $(td).addClass('do-not-use-cell');
+                }
+            }},  // 5: Canvas Name
+            { name: 'canvas_addr', data: 'canvas_address', className: 'resizable', createdCell: function(td, cellData) {
+                if (cellData && DO_NOT_USE_RE.test(cellData)) {
+                    $(td).addClass('do-not-use-cell');
+                }
+            }},  // 6: Canvas Addr
             {   // 7: Canvas City/St/Zip
-                data: null, orderable: false, className: 'resizable',
-                render: function(d) {
+                name: 'canvas_csz', data: 'canvas_city', className: 'resizable',
+                render: function(data, type, d) {
                     return `${d.canvas_city || ''}, ${d.canvas_state || ''} ${d.canvas_zip || ''}`;
                 }
             },
-            { data: 'canvas_id', width: '75px' },                             // 8: Canvas ID
-            { data: 'dec_name', className: 'resizable' },                      // 9: DEC Name
-            { data: 'dec_address', className: 'resizable' },                  // 10: DEC Addr
+            { name: 'canvas_id', data: 'canvas_id', width: '75px' },                       // 8: Canvas ID
+            { name: 'dec_name', data: 'dec_name', className: 'resizable', createdCell: function(td, cellData) {
+                if (cellData && DO_NOT_USE_RE.test(cellData)) {
+                    $(td).addClass('do-not-use-cell');
+                }
+            }},  // 9: DEC Name
+            { name: 'dec_addr', data: 'dec_address', className: 'resizable', createdCell: function(td, cellData) {
+                if (cellData && DO_NOT_USE_RE.test(cellData)) {
+                    $(td).addClass('do-not-use-cell');
+                }
+            }},  // 10: DEC Addr
             {   // 11: DEC City/St/Zip
-                data: null, orderable: false, className: 'resizable',
-                render: function(d) {
+                name: 'dec_csz', data: 'dec_city', className: 'resizable',
+                render: function(data, type, d) {
                     return `${d.dec_city || ''}, ${d.dec_state || ''} ${d.dec_zip || ''}`;
                 }
             },
-            { data: 'dec_hdrcode', width: '65px' },                           // 12: DEC Code
+            {   // 12: DEC Code
+                name: 'dec_code', data: 'dec_hdrcode', width: '90px',
+                render: function(data, type, d) {
+                    var code = data || '';
+                    var sub = d.dec_addrsubcode || '';
+                    return sub ? code + '-' + sub : code;
+                }
+            },
             {   // 13: JIB
-                data: 'jib', className: 'text-center', width: '35px',
+                name: 'jib', data: 'jib', className: 'text-center', width: '35px',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="jib" ${checked}>`;
                 }
             },
             {   // 14: Rev
-                data: 'rev', className: 'text-center', width: '35px',
+                name: 'rev', data: 'rev', className: 'text-center', width: '35px',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="rev" ${checked}>`;
                 }
             },
             {   // 15: Vendor
-                data: 'vendor', className: 'text-center', width: '50px',
+                name: 'vendor', data: 'vendor', className: 'text-center', width: '50px',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="vendor" ${checked}>`;
                 }
             },
             {   // 16: Actions
-                data: null, orderable: false, width: '70px',
+                name: 'actions', data: null, orderable: false, width: '70px',
                 render: function(data) {
                     return `<button class="btn btn-sm btn-outline-primary py-0 px-1" onclick="editRecord(${data._row_id})" title="Edit"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-outline-success py-0 px-1" onclick="quickApprove(${data._row_id})" title="Approve"><i class="fas fa-check"></i></button>`;
                 }
             }
         ],
         pageLength: 100,
-        lengthMenu: [[100, 500, 1000, 5000], [100, 500, '1,000', '5,000']],
+        lengthMenu: [[100, 500, 1000, 5000, -1], [100, 500, '1,000', '5,000', 'All Selected Recs']],
         order: [[1, 'desc']],
         language: {
             processing: '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>',
             lengthMenu: 'Show _MENU_'
+        },
+        createdRow: function(row, data) {
+            // Trust highlight (runs per-row during render — no DOM re-scan)
+            const cn = (data.canvas_name || '').toLowerCase();
+            const ca = (data.canvas_address || '').toLowerCase();
+            const combined = cn + ' ' + ca;
+            if (combined.includes('trust') || combined.includes('trst') || combined.includes(' tr ')) {
+                $(row).addClass('trust-highlight');
+            }
         },
         drawCallback: function() {
             $('.row-select').each(function() {
@@ -306,27 +503,15 @@ function initTable() {
                     $(this).closest('tr').addClass('row-selected');
                 }
             });
-
-            // Highlight rows with "trust" in Canvas Name or Address
-            $('#matchesTable tbody tr').each(function() {
-                const rowData = table.row(this).data();
-                if (rowData) {
-                    const canvasName = (rowData.canvas_name || '').toLowerCase();
-                    const canvasAddr = (rowData.canvas_address || '').toLowerCase();
-                    const combined = canvasName + ' ' + canvasAddr;
-
-                    if (combined.includes('trust') || combined.includes('trst') || combined.includes(' tr ')) {
-                        $(this).addClass('trust-highlight');
-                        console.log('Trust row found:', rowData.canvas_name, '|', rowData.canvas_address);
-                    }
-                }
-            });
         }
     });
 
     // Move DataTables length and search controls into the header
     $('#matchesTable_length').detach().appendTo('#dtLengthPlaceholder');
     $('#matchesTable_filter').detach().appendTo('#dtSearchPlaceholder');
+
+    // Column visibility dropdown
+    buildColVisDropdown();
 
     // Column resizing
     enableColumnResize('#matchesTable');
@@ -355,11 +540,15 @@ function enableColumnResize(tableSelector) {
 
     // Drag logic
     let dragging = false, startX, startW, $dragTh;
+    let resizeEndTime = 0;   // timestamp to suppress sort-click after resize
 
-    $table.on('mousedown', '.col-resize-handle', function(e) {
+    // Bind directly on each handle so it fires BEFORE ColReorder's th handler
+    $table.find('.col-resize-handle').on('mousedown', function(e) {
         e.preventDefault();
-        e.stopPropagation();
+        e.stopPropagation();          // stop bubble to th (ColReorder)
+        e.stopImmediatePropagation(); // stop any other handlers on this element
         dragging = true;
+        $table.DataTable().colReorder.disable();
         $dragTh = $(this).closest('th');
         startX = e.pageX;
         startW = $dragTh.outerWidth();
@@ -378,8 +567,18 @@ function enableColumnResize(tableSelector) {
             dragging = false;
             $dragTh = null;
             $('body').removeClass('col-resizing');
+            $table.DataTable().colReorder.enable();
+            resizeEndTime = Date.now();
         }
     });
+
+    // Capture-phase listener fires BEFORE DataTables' sort handler
+    $table[0].addEventListener('click', function(e) {
+        if (Date.now() - resizeEndTime < 300) {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+        }
+    }, true);
 }
 
 function ssnBadge(val) {
@@ -399,12 +598,7 @@ function scoreBadge(val) {
 function recBadge(val) {
     if (!val) return '';
     const color = REC_COLORS[val] || '#6c757d';
-    // Shorten for display
-    let short = val;
-    if (val.length > 25) {
-        short = val.replace('EXISTING BA - ', '').replace('NEW BA - ', 'NEW: ').replace('LIKELY NEW BA - ', '~NEW: ');
-    }
-    return `<span class="badge" style="background-color:${color}; font-size:0.7rem; white-space:nowrap;" title="${val}">${short}</span>`;
+    return `<span class="badge" style="background-color:${color}; font-size:0.7rem; white-space:nowrap;" title="${val}">${val}</span>`;
 }
 
 function loadStats() {
@@ -413,9 +607,9 @@ function loadStats() {
         $('#ssnPerfect').text(s.ssn_perfect_matches.toLocaleString());
         $('#ssnNone').text(s.ssn_no_match.toLocaleString());
 
-        // Recommendation breakdown row
+        // Recommendation breakdown row (sorted by preferred order)
         let html = '';
-        const recs = Object.entries(s.recommendations).sort((a, b) => b[1] - a[1]);
+        const recs = sortByRecOrder(Object.entries(s.recommendations));
         recs.forEach(function([rec, count]) {
             const color = REC_COLORS[rec] || '#6c757d';
             const pct = ((count / s.total_records) * 100).toFixed(1);
@@ -434,7 +628,9 @@ function loadStats() {
 
 function filterByRec(rec) {
     table.page.len(100).draw(false);
-    $('#recommendationFilter').val(rec);
+    $('.rec-check').prop('checked', false);
+    $(`.rec-check[value="${rec}"]`).prop('checked', true);
+    updateRecFilterLabel();
     $('#ssnFilter').val('');
     applyFilters();
 }
@@ -462,8 +658,16 @@ function applyFilters() {
     table.ajax.reload();
 }
 
+function openDevNotes() {
+    $.get('/api/dev_notes').fail(function(xhr) {
+        var msg = xhr.responseJSON ? xhr.responseJSON.error : 'Could not open Dev Notes';
+        showToast(msg, 'error');
+    });
+}
+
 function clearFilters() {
-    $('#recommendationFilter').val('');
+    $('.rec-check').prop('checked', false);
+    updateRecFilterLabel();
     $('#ssnFilter').val('');
     $('#minNameScore').val('');
     $('#maxNameScore').val('');
@@ -473,9 +677,17 @@ function clearFilters() {
 }
 
 function refreshData() {
-    loadStats();
-    table.ajax.reload();
-    showToast('Refreshed', 'success');
+    showToast('Reloading from database...', 'info');
+    $.post('/api/reload', function(data) {
+        loadStats();
+        table.ajax.reload();
+        showToast(data.message, 'success');
+    }).fail(function() {
+        // Fallback: just reload table from cache
+        loadStats();
+        table.ajax.reload();
+        showToast('Refreshed (from cache)', 'warning');
+    });
 }
 
 function updateSelectionInfo() {
@@ -619,9 +831,9 @@ function exportSelected() {
 }
 
 function exportData() {
-    const rec = $('#recommendationFilter').val();
+    const recs = getSelectedRecs();
     let url = '/api/export';
-    if (rec) url += `?recommendation=${encodeURIComponent(rec)}`;
+    if (recs.length > 0) url += `?recommendation=${encodeURIComponent(recs.join(','))}`;
     window.location.href = url;
 }
 
@@ -654,6 +866,57 @@ function updateSaveBtn() {
     btn.find('.save-count').text(pendingCount > 0 ? ` (${pendingCount})` : '');
 }
 
+function loadDataSources() {
+    $.get('/api/datasources', function(data) {
+        const selector = $('#datasourceSelector');
+        selector.empty();
+
+        data.datasources.forEach(function(ds) {
+            const option = $('<option></option>')
+                .val(ds.id)
+                .text(ds.name)
+                .data('type', ds.type);
+
+            if (ds.id === data.active) {
+                option.prop('selected', true);
+            }
+
+            selector.append(option);
+        });
+    }).fail(function() {
+        $('#datasourceSelector').html('<option value="">Error loading sources</option>');
+    });
+}
+
+function switchDataSource(sourceId) {
+    if (!confirm('Switch data source? This will reload all data.')) {
+        loadDataSources(); // Reset dropdown to current source
+        return;
+    }
+
+    showToast('Switching data source...', 'info');
+
+    $.ajax({
+        url: '/api/switch_datasource',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ source_id: sourceId }),
+        success: function(data) {
+            showToast(data.message + ` (${data.records.toLocaleString()} records)`, 'success');
+
+            // Reload page to refresh all data
+            setTimeout(function() {
+                location.reload();
+            }, 1000);
+        },
+        error: function(xhr) {
+            const msg = xhr.responseJSON ? xhr.responseJSON.error : 'Failed to switch data source';
+            showToast(msg, 'error');
+            loadDataSources(); // Reset dropdown to current source
+        }
+    });
+}
+
 function showToast(msg, type) {
     const colors = { success: '#28a745', error: '#dc3545', warning: '#ffc107', info: '#17a2b8' };
     const bg = colors[type] || colors.info;
@@ -681,5 +944,56 @@ $('<style>').text(`
     #matchesTable tbody tr.trust-highlight:hover,
     #matchesTable tbody tr.trust-highlight:hover td {
         background-color: #ffcc80 !important;
+    }
+    #matchesTable tbody td.do-not-use-cell {
+        background-color: #f8d7da !important;
+    }
+    .rec-multi-dropdown .dropdown-toggle {
+        font-size: 0.8rem;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .rec-filter-menu {
+        max-height: 320px;
+        overflow-y: auto;
+        min-width: 380px;
+        font-size: 0.8rem;
+    }
+    .rec-filter-item {
+        padding: 0.15rem 0.6rem;
+        cursor: pointer;
+    }
+    .rec-filter-item:active {
+        background-color: inherit;
+        color: inherit;
+    }
+    .col-vis-menu {
+        max-height: 400px;
+        overflow-y: auto;
+        min-width: 200px;
+        font-size: 0.8rem;
+    }
+    .col-vis-item {
+        padding: 0.15rem 0.6rem;
+        cursor: pointer;
+    }
+    .col-vis-item:active {
+        background-color: inherit;
+        color: inherit;
+    }
+    .dataTables_processing {
+        position: fixed !important;
+        top: 50% !important;
+        left: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        z-index: 1000;
+        background: rgba(255,255,255,0.95) !important;
+        padding: 20px 40px !important;
+        border-radius: 8px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+        width: auto !important;
+        margin: 0 !important;
     }
 `).appendTo('head');

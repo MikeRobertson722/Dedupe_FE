@@ -1,0 +1,35 @@
+{
+  "_comment": "Copy this file to datasources.json and update with your actual configurations",
+
+  "datasources": {
+    "excel": {
+      "name": "Excel (Local)",
+      "source_type": "excel",
+      "file_path": "C:\\path\\to\\your\\canvas_dec_matches.xlsx"
+    },
+    "sqlite": {
+      "name": "SQLite (Local DB)",
+      "source_type": "sqlite",
+      "db_path": "C:\\path\\to\\your\\database.db",
+      "table_name": "canvas_dec_matches"
+    },
+    "snowflake": {
+      "name": "Snowflake (Cloud)",
+      "source_type": "snowflake",
+      "account": "your_account_identifier",
+      "user": "your_username",
+      "password": "your_password_here",
+      "database": "your_database",
+      "schema": "your_schema",
+      "table": "canvas_dec_matches",
+      "warehouse": "your_warehouse"
+    }
+  },
+
+  "active": "excel",
+
+  "_instructions": {
+    "setup": "1. Copy this file to datasources.json, 2. Update credentials and paths, 3. Set 'active' to your preferred default source",
+    "switching": "Use the dropdown in the navbar to switch between configured sources at runtime"
+  }
+}

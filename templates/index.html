@@ -6,6 +6,7 @@
     <title>BA/Address Import - Canvas</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css" rel="stylesheet">
+    <link href="https://cdn.datatables.net/colreorder/1.7.0/css/colReorder.bootstrap5.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
@@ -16,8 +17,18 @@
                 <i class="fas fa-users-cog"></i> BA/Address Import - Canvas
             </span>
             <div class="d-flex align-items-center gap-2">
+                <i class="fas fa-database text-warning"></i>
+                <select id="datasourceSelector" class="form-select form-select-sm bg-secondary text-white border-secondary" style="width: auto; min-width: 180px;">
+                    <option value="">Loading...</option>
+                </select>
                 <button class="btn btn-outline-light btn-sm" onclick="refreshData()">
                     <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+                <button class="btn btn-outline-info btn-sm" onclick="openDevNotes()" title="Open Dev Notes">
+                    <i class="fas fa-file-word"></i> Dev Notes
+                </button>
+                <button class="btn btn-outline-warning btn-sm" data-bs-toggle="modal" data-bs-target="#helpModal" title="Help">
+                    <i class="fas fa-question-circle"></i>
                 </button>
             </div>
         </div>
@@ -60,10 +71,8 @@
             <div class="card-body py-2">
                 <div class="row align-items-end g-2">
                     <div class="col-md-4">
-                        <label for="recommendationFilter" class="form-label form-label-sm mb-1">Recommendation</label>
-                        <select id="recommendationFilter" class="form-select form-select-sm">
-                            <option value="">All</option>
-                        </select>
+                        <label class="form-label form-label-sm mb-1">Recommendation</label>
+                        <div id="recFilterContainer"></div>
                     </div>
                     <div class="col-md-1">
                         <label for="ssnFilter" class="form-label form-label-sm mb-1">SSN Match</label>
@@ -123,6 +132,7 @@
                 <button class="btn btn-outline-info btn-sm ms-1" onclick="exportSelected()" title="Download selected">
                     <i class="fas fa-download"></i>
                 </button>
+                <div id="colVisContainer" class="ms-3"></div>
             <div class="ms-auto d-flex align-items-center gap-2">
                 <select id="importType" class="form-select form-select-sm" style="width:auto" title="Select a list of Canvas IDs">
                     <option value="" selected>Select BA type...</option>
@@ -274,10 +284,120 @@
         </div>
     </div>
 
+    <!-- Help Modal -->
+    <div class="modal fade" id="helpModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header py-2 bg-dark text-white">
+                    <h6 class="modal-title"><i class="fas fa-question-circle text-warning"></i> Help &amp; Features Guide</h6>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" style="font-size:0.85rem;">
+                    <div class="accordion" id="helpAccordion">
+
+                        <div class="accordion-item">
+                            <h2 class="accordion-header"><button class="accordion-button py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpFilter"><i class="fas fa-filter me-2 text-primary"></i> Filtering &amp; Searching</button></h2>
+                            <div id="helpFilter" class="accordion-collapse collapse show" data-bs-parent="#helpAccordion">
+                                <div class="accordion-body py-2">
+                                    <ul class="mb-0">
+                                        <li><strong>Recommendation filter</strong> &mdash; Multi-select dropdown to filter by one or more recommendation types. No checkboxes checked = show all.</li>
+                                        <li><strong>SSN Match</strong> &mdash; Filter by Yes (100), Partial (1-99), or No (0).</li>
+                                        <li><strong>Name / Address score</strong> &mdash; Set min and max thresholds for Name Score and Address Score.</li>
+                                        <li><strong>Search box</strong> &mdash; Type to search across all columns.</li>
+                                        <li><strong>Stat cards</strong> &mdash; Click Total Records, SSN Perfect, or No SSN Match to quick-filter.</li>
+                                        <li><strong>Recommendation cards</strong> &mdash; Click any recommendation card to filter to that type.</li>
+                                        <li><strong>Clear</strong> &mdash; Resets all filters at once.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="accordion-item">
+                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpTable"><i class="fas fa-table me-2 text-info"></i> Table Controls</button></h2>
+                            <div id="helpTable" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                                <div class="accordion-body py-2">
+                                    <ul class="mb-0">
+                                        <li><strong>Page size</strong> &mdash; Show 100, 500, 1,000, 5,000, or All Selected Recs.</li>
+                                        <li><strong>Column sorting</strong> &mdash; Click any column header to sort ascending/descending.</li>
+                                        <li><strong>Column reordering</strong> &mdash; Drag column headers to rearrange the table layout.</li>
+                                        <li><strong>Column resizing</strong> &mdash; Drag the right edge of name/address column headers to adjust width.</li>
+                                        <li><strong>Show/Hide Columns</strong> &mdash; Dropdown to toggle visibility of any column, color-coded by group.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="accordion-item">
+                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpSelect"><i class="fas fa-check-square me-2 text-success"></i> Selection &amp; Copying</button></h2>
+                            <div id="helpSelect" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                                <div class="accordion-body py-2">
+                                    <ul class="mb-0">
+                                        <li><strong>Row checkboxes</strong> &mdash; Select individual rows; selection persists across pages.</li>
+                                        <li><strong>Select All</strong> &mdash; Header checkbox selects/deselects all visible rows.</li>
+                                        <li><strong>Cell selection</strong> &mdash; Click a cell to highlight it. <strong>Shift+click</strong> in the same column to select a range; in a different column to select the entire row. Text is auto-selected for copying.</li>
+                                        <li><strong>Ctrl+C</strong> &mdash; Copy selected cell values to clipboard.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="accordion-item">
+                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpEdit"><i class="fas fa-edit me-2 text-warning"></i> Editing &amp; Approval</button></h2>
+                            <div id="helpEdit" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                                <div class="accordion-body py-2">
+                                    <ul class="mb-0">
+                                        <li><strong>Edit button</strong> (<i class="fas fa-edit"></i>) &mdash; Opens a side-by-side modal showing Canvas (read-only) vs DEC (editable) fields with match scores.</li>
+                                        <li><strong>Quick Approve</strong> (<i class="fas fa-check"></i>) &mdash; Instantly sets a single record's recommendation to APPROVED.</li>
+                                        <li><strong>Approve Selected</strong> &mdash; Bulk-approves all checkbox-selected rows.</li>
+                                        <li><strong>JIB / Rev / Vendor checkboxes</strong> &mdash; Toggle directly in the table. If multiple cells are selected, the toggle applies to all selected rows.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="accordion-item">
+                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpImportExport"><i class="fas fa-file-export me-2 text-danger"></i> Import &amp; Export</button></h2>
+                            <div id="helpImportExport" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                                <div class="accordion-body py-2">
+                                    <ul class="mb-0">
+                                        <li><strong>Import Canvas IDs</strong> &mdash; Select JIB, Rev, or Vendor from the dropdown, then pick a CSV/TXT file of Canvas IDs to bulk-set that flag.</li>
+                                        <li><strong>Export filtered</strong> &mdash; Downloads all currently filtered records as an Excel file (uses the Export button in the toolbar).</li>
+                                        <li><strong>Export selected</strong> (<i class="fas fa-download"></i>) &mdash; Downloads only checkbox-selected rows as Excel.</li>
+                                        <li><strong>Save BA Types</strong> &mdash; Persists all pending JIB/Rev/Vendor changes back to the database. The badge shows how many changes are pending.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="accordion-item">
+                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpVisual"><i class="fas fa-palette me-2" style="color:#9b4d6e"></i> Visual Indicators</button></h2>
+                            <div id="helpVisual" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                                <div class="accordion-body py-2">
+                                    <ul class="mb-0">
+                                        <li><span class="badge" style="background:#ffe0b2;color:#333;">Orange rows</span> &mdash; Canvas name or address contains "trust", "trst", or "tr".</li>
+                                        <li><span class="badge" style="background:#f8d7da;color:#333;">Red cells</span> &mdash; Cell contains "DO NOT USE" (or variations: DON'T USE, DNU, etc.).</li>
+                                        <li><strong>Score badges</strong> &mdash; <span class="badge bg-success">100</span> perfect, <span class="badge" style="background:#0d6efd">90+</span> high, <span class="badge bg-warning text-dark">75+</span> medium, <span class="badge bg-danger">&lt;75</span> low.</li>
+                                        <li><strong>SSN badges</strong> &mdash; <span class="badge bg-success">Yes</span> = 100, <span class="badge bg-danger">No</span> = 0.</li>
+                                        <li><strong>Recommendation badges</strong> &mdash; Each recommendation type has a unique color.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+                <div class="modal-footer py-2">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
     <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+    <script src="https://cdn.datatables.net/colreorder/1.7.0/js/dataTables.colReorder.min.js"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>
