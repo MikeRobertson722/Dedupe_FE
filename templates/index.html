@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BA/Address Import - Canvas</title>
+    <title>BA/Address Import - (Canvas - Enertia)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css" rel="stylesheet">
     <link href="https://cdn.datatables.net/colreorder/1.7.0/css/colReorder.bootstrap5.min.css" rel="stylesheet">
@@ -14,7 +14,7 @@
     <nav class="navbar navbar-dark bg-dark flex-shrink-0">
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1">
-                <i class="fas fa-users-cog"></i> BA/Address Import - Canvas
+                <i class="fas fa-users-cog"></i> BA/Address Import - (Canvas - Enertia)
             </span>
             <div class="d-flex align-items-center gap-2">
                 <i class="fas fa-database text-warning"></i>
@@ -48,8 +48,8 @@
         <div class="card mb-3">
             <div class="card-body py-2">
                 <div class="row align-items-end g-2">
-                    <div class="col-md-4">
-                        <label class="form-label form-label-sm mb-1">Recommendation</label>
+                    <div class="col-md-2">
+                        <label class="form-label form-label-sm mb-1">Status</label>
                         <div id="recFilterContainer"></div>
                     </div>
                     <div class="col-md-1">
@@ -111,7 +111,7 @@
                     <i class="fas fa-download"></i>
                 </button>
                 <div id="colVisContainer" class="ms-3"></div>
-            <div class="ms-auto d-flex align-items-center gap-2">
+            <div class="ms-auto d-flex align-items-center gap-2" style="display:none !important;">
                 <select id="importType" class="form-select form-select-sm" style="width:auto" title="Select a list of Canvas IDs">
                     <option value="" selected>Select BA type...</option>
                     <option value="jib">JIB</option>
@@ -133,10 +133,12 @@
             <thead>
                 <tr>
                     <th class="text-center" style="width:30px"><input type="checkbox" id="selectAll"></th>
+                    <th>UID</th>
                     <th>SSN</th>
                     <th>Name</th>
                     <th>Addr</th>
-                    <th>Recommendation</th>
+                    <th>Status</th>
+                    <th>Process</th>
                     <th style="background-color: #1e3a8a; color: white;">Canvas Name</th>
                     <th style="background-color: #1e3a8a; color: white;">Canvas Addr</th>
                     <th style="background-color: #1e3a8a; color: white;">Canvas City/St/Zip</th>
@@ -145,9 +147,11 @@
                     <th style="background-color: #9b4d6e; color: white;">DEC Addr</th>
                     <th style="background-color: #9b4d6e; color: white;">DEC City/St/Zip</th>
                     <th style="background-color: #9b4d6e; color: white;">DEC Code</th>
+                    <th style="background-color: #9b4d6e; color: white;">Address Lookup</th>
                     <th class="text-center">JIB</th>
                     <th class="text-center">Rev</th>
                     <th class="text-center">Vendor</th>
+                    <th>Memo</th>
                     <th style="width:80px">Actions</th>
                 </tr>
             </thead>
@@ -249,6 +253,12 @@
                                     <input type="text" class="form-control form-control-sm" id="editAddressReason">
                                 </div>
                             </div>
+                            <div class="row mt-2">
+                                <div class="col-12">
+                                    <label class="form-label form-label-sm mb-0 fw-bold">Memo</label>
+                                    <textarea class="form-control form-control-sm" id="editMemo" rows="2" placeholder="Add notes..."></textarea>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -257,6 +267,23 @@
                     <button type="button" class="btn btn-primary btn-sm" onclick="saveRecord()">
                         <i class="fas fa-save"></i> Save Changes
                     </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Modal -->
+    <div class="modal fade" id="confirmModal" tabindex="-1">
+        <div class="modal-dialog modal-sm modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header py-2 bg-dark text-white">
+                    <h6 class="modal-title" id="confirmModalTitle">Confirm</h6>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body text-center py-3" id="confirmModalBody"></div>
+                <div class="modal-footer py-1 justify-content-center">
+                    <button type="button" class="btn btn-sm btn-secondary px-3" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-success px-3" id="confirmModalOk">Approve</button>
                 </div>
             </div>
         </div>
@@ -309,11 +336,12 @@
                             <div id="helpTable" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Page size</strong> &mdash; Show 100, 500, 1,000, 5,000, or All Selected Recs.</li>
+                                        <li><strong>Page size</strong> &mdash; Show 100, 500, 1,000, 5,000, or All Records.</li>
                                         <li><strong>Column sorting</strong> &mdash; Click any column header to sort ascending/descending (server-side).</li>
-                                        <li><strong>Column reordering</strong> &mdash; Drag column headers to rearrange the table layout. The checkbox column (left) and actions column (right) are fixed in place.</li>
-                                        <li><strong>Column resizing</strong> &mdash; Drag the right edge of name/address column headers to adjust width. Only columns with text content (Canvas Name, Canvas Addr, Canvas City/St/Zip, DEC Name, DEC Addr, DEC City/St/Zip) are resizable.</li>
+                                        <li><strong>Column reordering</strong> &mdash; Drag column headers to rearrange the table layout. The checkbox column (left) is fixed in place.</li>
+                                        <li><strong>Column resizing</strong> &mdash; Drag the right edge of any column header to adjust width. All data columns are resizable (SSN, scores, Status, Process, Canvas/DEC name/address/CSZ, Canvas ID, DEC Code). Minimum width is 50px.</li>
                                         <li><strong>Show/Hide Columns</strong> &mdash; Dropdown to toggle visibility of any column. Columns are color-coded: <span style="background:#1e3a8a;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">Canvas</span> <span style="background:#9b4d6e;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">DEC</span> <span style="background:#212529;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">General</span></li>
+                                        <li><strong>Hidden by default</strong> &mdash; UID, Address Lookup, Canvas ID, DEC Code, JIB, Rev, Vendor, and Actions columns are hidden initially. Use Show/Hide Columns to reveal them.</li>
                                         <li><strong>Sticky headers</strong> &mdash; Column headers stay visible when scrolling through table rows.</li>
                                     </ul>
                                 </div>
@@ -344,8 +372,11 @@
                                         <li><strong>Edit button</strong> (<i class="fas fa-edit"></i>) &mdash; Opens a side-by-side modal showing Canvas (read-only) vs DEC (editable) fields with match scores. Edit DEC name, address, city, state, zip, and recommendation.</li>
                                         <li><strong>Quick Approve</strong> (<i class="fas fa-check"></i>) &mdash; Instantly sets a single record's recommendation to APPROVED without opening the edit modal.</li>
                                         <li><strong>Approve Selected</strong> &mdash; Bulk-approves all checkbox-selected rows in one action.</li>
+                                        <li><strong>Process column</strong> &mdash; Click any Process cell to open a dropdown with options: "Add new BA and address", "Merge BA - add addr", "Merge BA and address", or "Manual Review -DNP". Defaults are auto-populated based on the recommendation status.</li>
+                                        <li><strong>Process right-click</strong> &mdash; Right-click the <strong>Process</strong> column header to set all visible rows to one option at once. Changes are saved immediately via deferred save.</li>
                                         <li><strong>JIB / Rev / Vendor checkboxes</strong> &mdash; Toggle BA type flags directly in the table. If multiple cells are selected in the column, the toggle applies to all selected rows at once.</li>
-                                        <li><strong>Save BA Types</strong> &mdash; Persists all pending JIB/Rev/Vendor changes back to the database. The badge counter shows how many changes are pending.</li>
+                                        <li><strong>Memo column</strong> &mdash; Click any Memo cell to type a free-text note. Saves automatically on Enter or when you click away. Press Escape to cancel. Also editable in the Edit modal.</li>
+                                        <li><strong>Save BA Types</strong> &mdash; Persists all pending JIB/Rev/Vendor/Process changes back to the database. The badge counter shows how many changes are pending.</li>
                                     </ul>
                                 </div>
                             </div>

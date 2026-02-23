@@ -167,6 +167,14 @@ class DataSource:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
 
+        # Ensure how_to_process column exists
+        if 'how_to_process' not in df.columns:
+            df['how_to_process'] = ''
+
+        # Ensure memo column exists
+        if 'memo' not in df.columns:
+            df['memo'] = ''
+
         # Ensure numeric columns are properly typed
         numeric_cols = ['ssn_match', 'name_score', 'address_score']
         for col in numeric_cols:

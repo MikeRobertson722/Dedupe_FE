@@ -55,6 +55,36 @@ _df_cache_time = None
 # Track unsaved jib/rev/vendor changes: {row_id: {field: new_value, ...}, ...}
 _pending_changes = {}
 
+# Lock to prevent concurrent background saves from corrupting the database
+_save_lock = threading.Lock()
+
+
+def _ensure_indexes():
+    """Create indexes on filterable/sortable columns and composite key used by UPDATE queries"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        # Composite index for UPDATE WHERE canvas_id = ? AND canvas_ssn = ?
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_canvas_id_ssn ON canvas_dec_matches(canvas_id, canvas_ssn)")
+        # Filter columns
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_recommendation ON canvas_dec_matches(recommendation)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ssn_match ON canvas_dec_matches(ssn_match)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_name_score ON canvas_dec_matches(name_score)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_address_score ON canvas_dec_matches(address_score)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_canvas_id ON canvas_dec_matches(canvas_id)")
+        # Sort/search columns
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_canvas_name ON canvas_dec_matches(canvas_name)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_dec_name ON canvas_dec_matches(dec_name)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_dec_hdrcode ON canvas_dec_matches(dec_hdrcode)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_how_to_process ON canvas_dec_matches(how_to_process)")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Index creation skipped: {e}")
+
+
+_ensure_indexes()
+
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -80,7 +110,12 @@ def save_excel_data(df):
     # Write to data source in background thread so the API response returns immediately
     df_copy = df.copy()
     config_copy = DATA_CONFIG.copy()
-    threading.Thread(target=lambda: save_data(df_copy, config_copy), daemon=True).start()
+
+    def _locked_save():
+        with _save_lock:
+            save_data(df_copy, config_copy)
+
+    threading.Thread(target=_locked_save, daemon=True).start()
 
 
 @app.route('/')
@@ -169,10 +204,10 @@ def get_matches():
         order_dir = request.args.get('order[0][dir]', default='asc')
 
         sortable_fields = {
-            'ssn_match', 'name_score', 'address_score', 'recommendation',
+            'id', 'ssn_match', 'name_score', 'address_score', 'recommendation',
             'canvas_name', 'canvas_address', 'canvas_city', 'canvas_id',
-            'dec_name', 'dec_address', 'dec_city', 'dec_hdrcode',
-            'jib', 'rev', 'vendor'
+            'dec_name', 'dec_address', 'dec_city', 'dec_hdrcode', 'dec_address_looked_up',
+            'jib', 'rev', 'vendor', 'how_to_process', 'memo'
         }
         if order_col is not None:
             col_data = request.args.get(f'columns[{order_col}][data]', default=None)
@@ -184,9 +219,21 @@ def get_matches():
         # Paginate (-1 means all)
         df_page = df_filtered.iloc[start:] if length == -1 else df_filtered.iloc[start:start + length]
 
-        # Build response — inject row IDs via the index, then fast-serialize
-        df_out = df_page.fillna('')
+        # Only send columns the frontend needs (skip internal/unused fields)
+        needed_cols = [
+            'id', 'ssn_match', 'name_score', 'address_score', 'recommendation',
+            'how_to_process', 'canvas_id', 'canvas_addrseq', 'canvas_name',
+            'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip', 'canvas_ssn',
+            'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
+            'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
+            'address_reason', 'jib', 'rev', 'vendor', 'memo'
+        ]
+        available = [c for c in needed_cols if c in df_page.columns]
+        df_out = df_page[available].fillna('')
+        df_out = df_out.copy()
         df_out['_row_id'] = df_page.index
+
+        # Fast-serialize: use to_dict + json.dumps
         data = df_out.to_dict('records')
 
         result = json.dumps({
@@ -255,7 +302,7 @@ def update_record():
         allowed_fields = {
             'recommendation', 'dec_hdrcode', 'dec_name', 'dec_address',
             'dec_city', 'dec_state', 'dec_zip', 'dec_contact', 'address_reason',
-            'jib', 'rev', 'vendor'
+            'jib', 'rev', 'vendor', 'how_to_process', 'memo'
         }
         if field not in allowed_fields:
             return jsonify({'error': f'Field "{field}" cannot be updated'}), 400
@@ -264,12 +311,13 @@ def update_record():
         if row_id >= len(df):
             return jsonify({'error': 'Invalid row_id'}), 400
 
-        # For jib/rev/vendor: update in-memory only, track as pending
-        if field in ('jib', 'rev', 'vendor'):
-            df.at[row_id, field] = int(value)
+        # For jib/rev/vendor/how_to_process: update in-memory only, track as pending
+        if field in ('jib', 'rev', 'vendor', 'how_to_process'):
+            coerced = value if field == 'how_to_process' else int(value)
+            df.at[row_id, field] = coerced
             if row_id not in _pending_changes:
                 _pending_changes[row_id] = {}
-            _pending_changes[row_id][field] = int(value)
+            _pending_changes[row_id][field] = coerced
             return jsonify({
                 'success': True,
                 'pending_count': len(_pending_changes),
@@ -397,8 +445,14 @@ def dev_notes():
     notes_path = Path('Things to consider.docx').resolve()
     if not notes_path.exists():
         return jsonify({'error': 'Dev notes file not found'}), 404
-    import os
-    os.startfile(str(notes_path))
+    import subprocess
+    subprocess.Popen(
+        ['powershell', '-WindowStyle', 'Hidden', '-Command',
+         f'Start-Process "{notes_path}";'
+         ' Start-Sleep -Milliseconds 500;'
+         ' (New-Object -ComObject WScript.Shell).AppActivate("Word")'],
+        creationflags=0x08000000
+    )
     return jsonify({'message': 'Opened in Word'})
 
 
@@ -502,7 +556,8 @@ def save_changes():
             ssn = str(df.at[row_id, 'canvas_ssn'])
             for field, new_val in fields.items():
                 update_params.append((new_val, field, cid, ssn))
-                log_params.append((cid, ssn, field, str(1 - new_val), str(new_val), now))
+                old_val = '' if isinstance(new_val, str) else str(1 - new_val)
+                log_params.append((cid, ssn, field, old_val, str(new_val), now))
 
         # Batch update DB — group by field for executemany
         by_field = {}
@@ -707,6 +762,8 @@ def init_database():
     for col in ('jib', 'rev', 'vendor'):
         if col not in existing_cols:
             cursor.execute(f"ALTER TABLE canvas_dec_matches ADD COLUMN {col} INTEGER DEFAULT 0")
+    if 'memo' not in existing_cols:
+        cursor.execute("ALTER TABLE canvas_dec_matches ADD COLUMN memo TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 

@@ -97,23 +97,27 @@ function toggleAllRecs(selectAll) {
     applyFilters();
 }
 
-// Column visibility dropdown  [label, header color, column name]
+// Column visibility dropdown  [label, header color, column name, default visible]
 const COL_DEFS = [
+    ['UID', '#212529', 'uid', false],
     ['SSN', '#212529', 'ssn'],
     ['Name Score', '#212529', 'name_score'],
     ['Addr Score', '#212529', 'addr_score'],
-    ['Recommendation', '#212529', 'recommendation'],
+    ['Status', '#212529', 'recommendation'],
+    ['Process', '#212529', 'how_to_process'],
     ['Canvas Name', '#1e3a8a', 'canvas_name'],
     ['Canvas Addr', '#1e3a8a', 'canvas_addr'],
     ['Canvas City/St/Zip', '#1e3a8a', 'canvas_csz'],
-    ['Canvas ID', '#1e3a8a', 'canvas_id'],
+    ['Canvas ID', '#1e3a8a', 'canvas_id', false],
     ['DEC Name', '#9b4d6e', 'dec_name'],
     ['DEC Addr', '#9b4d6e', 'dec_addr'],
     ['DEC City/St/Zip', '#9b4d6e', 'dec_csz'],
-    ['DEC Code', '#9b4d6e', 'dec_code'],
-    ['JIB', '#212529', 'jib'],
-    ['Rev', '#212529', 'rev'],
-    ['Vendor', '#212529', 'vendor']
+    ['DEC Code', '#9b4d6e', 'dec_code', false],
+    ['Address Lookup', '#9b4d6e', 'addr_lookup', false],
+    ['JIB', '#212529', 'jib', false],
+    ['Rev', '#212529', 'rev', false],
+    ['Vendor', '#212529', 'vendor', false],
+    ['Memo', '#212529', 'memo']
 ];
 
 function buildColVisDropdown() {
@@ -128,9 +132,11 @@ function buildColVisDropdown() {
     html += '</div>';
     COL_DEFS.forEach(function(def) {
         var label = def[0], color = def[1], colName = def[2];
+        var defaultVisible = def.length > 3 ? def[3] : true;
+        var checkedAttr = defaultVisible ? ' checked' : '';
         var style = color ? 'background-color:' + color + ';color:#fff;border-radius:3px;padding:1px 6px;' : '';
         html += '<label class="dropdown-item col-vis-item d-flex align-items-center gap-2 py-1">';
-        html += '<input type="checkbox" class="col-vis-check form-check-input mt-0" data-col-name="' + colName + '" checked>';
+        html += '<input type="checkbox" class="col-vis-check form-check-input mt-0" data-col-name="' + colName + '"' + checkedAttr + '>';
         html += '<span class="small" style="' + style + '">' + label + '</span>';
         html += '</label>';
     });
@@ -396,6 +402,121 @@ $(document).ready(function() {
             });
         }
     });
+
+    // Process: click text to open inline dropdown, save on change
+    var PROCESS_OPTS = ['Add new BA and address', 'Merge BA - add addr', 'Merge BA and address', 'Manual Review -DNP'];
+
+    function saveProcessValue(rowId, value) {
+        $.ajax({
+            url: '/api/update',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ row_id: rowId, field: 'how_to_process', value: value }),
+            success: function(data) {
+                pendingCount = data.pending_count || 0;
+                updateSaveBtn();
+            },
+            error: function() { showToast('Update failed', 'error'); }
+        });
+    }
+
+    $('#matchesTable tbody').on('click', '.process-text', function() {
+        var $span = $(this);
+        if ($span.data('editing')) return;
+        $span.data('editing', true);
+        var rowId = $span.data('row-id');
+        var curVal = $span.data('value');
+        var html = '<select class="form-select form-select-sm process-select" data-row-id="' + rowId + '" style="font-size:0.75rem;padding:1px 4px;">';
+        PROCESS_OPTS.forEach(function(o) {
+            html += '<option value="' + o + '"' + (o === curVal ? ' selected' : '') + '>' + o + '</option>';
+        });
+        html += '</select>';
+        var $sel = $(html);
+        $span.replaceWith($sel);
+        $sel.focus();
+        $sel.on('change', function() {
+            var newVal = $(this).val();
+            saveProcessValue(rowId, newVal);
+            var $newSpan = $('<span class="process-text" data-row-id="' + rowId + '" data-value="' + newVal + '" style="font-size:0.75rem;cursor:pointer;" title="Click to change">' + newVal + '</span>');
+            $(this).replaceWith($newSpan);
+        });
+        $sel.on('blur', function() {
+            var val = $(this).val();
+            var $newSpan = $('<span class="process-text" data-row-id="' + rowId + '" data-value="' + val + '" style="font-size:0.75rem;cursor:pointer;" title="Click to change">' + val + '</span>');
+            $(this).replaceWith($newSpan);
+        });
+    });
+
+    // Memo: click text to open inline input, save on blur/Enter
+    $('#matchesTable tbody').on('click', '.memo-text', function() {
+        var $span = $(this);
+        if ($span.data('editing')) return;
+        $span.data('editing', true);
+        var rowId = $span.data('row-id');
+        var curVal = $span.text();
+        var $input = $('<input type="text" class="form-control form-control-sm" style="font-size:0.75rem;padding:1px 4px;">').val(curVal);
+        $span.replaceWith($input);
+        $input.focus();
+        var saved = false;
+        function saveMemo() {
+            if (saved) return;
+            saved = true;
+            var newVal = $input.val();
+            $.ajax({
+                url: '/api/update', method: 'POST', contentType: 'application/json',
+                data: JSON.stringify({ row_id: rowId, field: 'memo', value: newVal }),
+                error: function() { showToast('Memo save failed', 'error'); }
+            });
+            var escaped = newVal.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            var $newSpan = $('<span class="memo-text" data-row-id="' + rowId + '" style="font-size:0.75rem;cursor:pointer;" title="Click to edit">' + escaped + '</span>');
+            $input.replaceWith($newSpan);
+        }
+        $input.on('blur', saveMemo);
+        $input.on('keydown', function(e) {
+            if (e.key === 'Enter') { e.preventDefault(); saveMemo(); }
+            if (e.key === 'Escape') {
+                saved = true;
+                var escaped = curVal.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                var $newSpan = $('<span class="memo-text" data-row-id="' + rowId + '" style="font-size:0.75rem;cursor:pointer;" title="Click to edit">' + escaped + '</span>');
+                $input.replaceWith($newSpan);
+            }
+        });
+    });
+
+    // Right-click on Process column header → set all visible rows to chosen option
+    $('#matchesTable').on('contextmenu', 'th', function(e) {
+        var colName = table ? table.column(this).dataSrc() : '';
+        if (colName !== 'how_to_process') return;
+        e.preventDefault();
+        $('.process-ctx-menu').remove();
+        var html = '<div class="process-ctx-menu" style="position:fixed;z-index:9999;background:#fff;border:1px solid #ccc;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.2);padding:4px 0;">';
+        PROCESS_OPTS.forEach(function(o) {
+            html += '<div class="process-ctx-item" style="padding:6px 16px;cursor:pointer;font-size:0.85rem;white-space:nowrap;" data-value="' + o + '">Update to: ' + o + '</div>';
+        });
+        html += '</div>';
+        var $menu = $(html);
+        $menu.css({ top: e.clientY + 'px', left: e.clientX + 'px' });
+        $('body').append($menu);
+        $menu.find('.process-ctx-item').hover(
+            function() { $(this).css('background', '#e9ecef'); },
+            function() { $(this).css('background', '#fff'); }
+        );
+        $menu.find('.process-ctx-item').on('click', function() {
+            var chosen = $(this).data('value');
+            $menu.remove();
+            var spans = $('#matchesTable tbody .process-text');
+            var count = 0;
+            spans.each(function() {
+                if ($(this).data('value') !== chosen) {
+                    $(this).data('value', chosen).text(chosen);
+                    saveProcessValue($(this).data('row-id'), chosen);
+                    count++;
+                }
+            });
+            showToast('Updated ' + count + ' rows to "' + chosen + '"');
+        });
+        $(document).one('click', function() { $menu.remove(); });
+    });
 });
 
 function initTable() {
@@ -404,6 +525,7 @@ function initTable() {
         serverSide: true,
         autoWidth: false,
         deferRender: true,
+        searchDelay: 400,
         colReorder: {
             fixedColumnsLeft: 1,
             fixedColumnsRight: 1
@@ -430,15 +552,16 @@ function initTable() {
                     return `<input type="checkbox" class="row-select" data-row-id="${data._row_id}">`;
                 }
             },
-            { name: 'ssn', data: 'ssn_match', render: ssnBadge, width: '42px' },           // 1: SSN
-            { name: 'name_score', data: 'name_score', render: scoreBadge, width: '42px',
+            { name: 'uid', data: 'id', visible: false, width: '60px' },                    // 1: UID (hidden by default)
+            { name: 'ssn', data: 'ssn_match', render: ssnBadge, className: 'resizable', width: '42px' },           // 2: SSN
+            { name: 'name_score', data: 'name_score', render: scoreBadge, className: 'resizable', width: '42px',
               createdCell: function(td, cellData) {
                   if (cellData !== '' && cellData !== null && cellData < 45) {
                       $(td).attr('title', 'This may be low because name may exist in address field');
                   }
               }
             },  // 2: Name
-            { name: 'addr_score', data: 'address_score', render: scoreBadge, width: '42px',
+            { name: 'addr_score', data: 'address_score', render: scoreBadge, className: 'resizable', width: '42px',
               createdCell: function(td, cellData, rowData) {
                   if (cellData !== '' && cellData !== null && cellData > 45 &&
                       rowData.recommendation && rowData.recommendation.toUpperCase().indexOf('NEW ADDRESS') !== -1) {
@@ -446,84 +569,112 @@ function initTable() {
                   }
               }
             }, // 3: Addr
-            { name: 'recommendation', data: 'recommendation', render: recBadge, className: 'rec-col', width: '310px' }, // 4: Rec
-            { name: 'canvas_name', data: 'canvas_name', className: 'resizable', createdCell: function(td, cellData) {
+            { name: 'recommendation', data: 'recommendation', render: recBadge, className: 'rec-col resizable', width: '140px' }, // 4: Rec
+            {   // 5: Process
+                name: 'how_to_process', data: 'how_to_process', className: 'resizable', width: '100px',
+                render: function(data, type, row) {
+                    var val = data || '';
+                    if (!val) {
+                        var rec = (row.recommendation || '').toUpperCase();
+                        if (rec.indexOf('NEW BA') !== -1 || rec.indexOf('LIKELY BA MATCH') !== -1) val = 'Add new BA and address';
+                        else if (rec.indexOf('EXISTING BA - NEW ADDRESS') !== -1) val = 'Merge BA - add addr';
+                        else if (rec.indexOf('EXISTING BA') !== -1) val = 'Merge BA and address';
+                    }
+                    return '<span class="process-text" data-row-id="' + row._row_id + '" data-value="' + val + '" style="font-size:0.75rem;cursor:pointer;" title="Click to change">' + val + '</span>';
+                }
+            },
+            { name: 'canvas_name', data: 'canvas_name', className: 'resizable', width: '120px', createdCell: function(td, cellData) {
                 if (cellData && DO_NOT_USE_RE.test(cellData)) {
                     $(td).addClass('do-not-use-cell');
                 }
             }},  // 5: Canvas Name
-            { name: 'canvas_addr', data: 'canvas_address', className: 'resizable', createdCell: function(td, cellData) {
+            { name: 'canvas_addr', data: 'canvas_address', className: 'resizable', width: '120px', createdCell: function(td, cellData) {
                 if (cellData && DO_NOT_USE_RE.test(cellData)) {
                     $(td).addClass('do-not-use-cell');
                 }
             }},  // 6: Canvas Addr
             {   // 7: Canvas City/St/Zip
-                name: 'canvas_csz', data: 'canvas_city', className: 'resizable',
+                name: 'canvas_csz', data: 'canvas_city', className: 'resizable', width: '120px',
                 render: function(data, type, d) {
                     return `${d.canvas_city || ''}, ${d.canvas_state || ''} ${d.canvas_zip || ''}`;
                 }
             },
-            { name: 'canvas_id', data: 'canvas_id', width: '95px',                          // 8: Canvas ID
+            { name: 'canvas_id', data: 'canvas_id', className: 'resizable', visible: false, width: '95px',            // 8: Canvas ID
               render: function(data, type, d) {
                   var seq = d.canvas_addrseq || '';
                   return seq ? data + '-' + seq : (data || '');
               }
             },
-            { name: 'dec_name', data: 'dec_name', className: 'resizable', createdCell: function(td, cellData) {
+            { name: 'dec_name', data: 'dec_name', className: 'resizable', width: '120px', createdCell: function(td, cellData) {
                 if (cellData && DO_NOT_USE_RE.test(cellData)) {
                     $(td).addClass('do-not-use-cell');
                 }
             }},  // 9: DEC Name
-            { name: 'dec_addr', data: 'dec_address', className: 'resizable', createdCell: function(td, cellData) {
+            { name: 'dec_addr', data: 'dec_address', className: 'resizable', width: '120px', createdCell: function(td, cellData) {
                 if (cellData && DO_NOT_USE_RE.test(cellData)) {
                     $(td).addClass('do-not-use-cell');
                 }
             }},  // 10: DEC Addr
             {   // 11: DEC City/St/Zip
-                name: 'dec_csz', data: 'dec_city', className: 'resizable',
+                name: 'dec_csz', data: 'dec_city', className: 'resizable', width: '120px',
                 render: function(data, type, d) {
                     return `${d.dec_city || ''}, ${d.dec_state || ''} ${d.dec_zip || ''}`;
                 }
             },
             {   // 12: DEC Code
-                name: 'dec_code', data: 'dec_hdrcode', width: '90px',
+                name: 'dec_code', data: 'dec_hdrcode', className: 'resizable', visible: false, width: '90px',
                 render: function(data, type, d) {
                     var code = data || '';
                     var sub = d.dec_addrsubcode || '';
                     return sub ? code + '-' + sub : code;
                 }
             },
-            {   // 13: JIB
-                name: 'jib', data: 'jib', className: 'text-center', width: '35px',
+            {   // 14: Address Lookup
+                name: 'addr_lookup', data: 'dec_address_looked_up', className: 'text-center', width: '50px', visible: false,
+                render: function(data) {
+                    const checked = (data === 1 || data === '1') ? 'checked' : '';
+                    return `<input type="checkbox" ${checked} disabled>`;
+                }
+            },
+            {   // 15: JIB
+                name: 'jib', data: 'jib', className: 'text-center', visible: false, width: '35px',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="jib" ${checked}>`;
                 }
             },
             {   // 14: Rev
-                name: 'rev', data: 'rev', className: 'text-center', width: '35px',
+                name: 'rev', data: 'rev', className: 'text-center', visible: false, width: '35px',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="rev" ${checked}>`;
                 }
             },
             {   // 15: Vendor
-                name: 'vendor', data: 'vendor', className: 'text-center', width: '50px',
+                name: 'vendor', data: 'vendor', className: 'text-center', visible: false, width: '50px',
                 render: function(data, type, row) {
                     const checked = data ? 'checked' : '';
                     return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="vendor" ${checked}>`;
                 }
             },
-            {   // 16: Actions
-                name: 'actions', data: null, orderable: false, width: '70px',
+            {   // Memo
+                name: 'memo', data: 'memo', className: 'resizable', width: '150px',
+                render: function(data, type, row) {
+                    var val = data || '';
+                    var escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                    return '<span class="memo-text" data-row-id="' + row._row_id + '" style="font-size:0.75rem;cursor:pointer;" title="Click to edit">' + escaped + '</span>';
+                }
+            },
+            {   // Actions
+                name: 'actions', data: null, orderable: false, visible: false, width: '70px',
                 render: function(data) {
                     return `<button class="btn btn-sm btn-outline-primary py-0 px-1" onclick="editRecord(${data._row_id})" title="Edit"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-outline-success py-0 px-1" onclick="quickApprove(${data._row_id})" title="Approve"><i class="fas fa-check"></i></button>`;
                 }
             }
         ],
         pageLength: 100,
-        lengthMenu: [[100, 500, 1000, 5000, -1], [100, 500, '1,000', '5,000', 'All Selected Recs']],
-        order: [[1, 'desc']],
+        lengthMenu: [[100, 500, 1000, 5000, -1], [100, 500, '1,000', '5,000', 'All Records']],
+        order: [[2, 'desc']],
         language: {
             processing: '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>',
             lengthMenu: 'Show _MENU_'
@@ -563,21 +714,13 @@ function enableColumnResize(tableSelector) {
     const $table = $(tableSelector);
     $table.css('table-layout', 'fixed');
 
-    // Only add resize handles to columns whose td has class 'resizable'
-    // DataTables applies className to td, so check which column indices are resizable
-    const resizableIndices = new Set();
-    $table.DataTable().columns().every(function(idx) {
-        const col = this.settings()[0].aoColumns[idx];
+    // Add resize handles to columns whose definition includes class 'resizable'
+    // Use DataTables API to get header nodes directly (avoids index mismatch with hidden columns)
+    $table.DataTable().columns().every(function() {
+        const col = this.settings()[0].aoColumns[this.index()];
         if (col.sClass && col.sClass.indexOf('resizable') !== -1) {
-            resizableIndices.add(idx);
+            $(this.header()).append('<div class="col-resize-handle"></div>');
         }
-    });
-
-    const $ths = $table.find('thead th');
-    $ths.each(function(idx) {
-        if (!resizableIndices.has(idx)) return;
-        const $th = $(this);
-        $th.append('<div class="col-resize-handle"></div>');
     });
 
     // Drag logic
@@ -640,7 +783,7 @@ function scoreBadge(val) {
 function recBadge(val) {
     if (!val) return '';
     const color = REC_COLORS[val] || '#6c757d';
-    return `<span class="badge" style="background-color:${color}; font-size:0.7rem; white-space:nowrap;" title="${val}">${val}</span>`;
+    return `<span class="badge" style="background-color:${color}; font-size:0.65rem; white-space:normal; line-height:1.2;" title="${val}">${val}</span>`;
 }
 
 function loadStats() {
@@ -767,6 +910,7 @@ function editRecord(rowId) {
 
         $('#editRecommendation').val(d.recommendation || '');
         $('#editAddressReason').val(d.address_reason || '');
+        $('#editMemo').val(d.memo || '');
 
         editModal.show();
     });
@@ -793,7 +937,8 @@ function saveRecord() {
         'dec_contact': $('#editDecContact').val(),
         'dec_hdrcode': $('#editDecHdrcode').val(),
         'recommendation': $('#editRecommendation').val(),
-        'address_reason': $('#editAddressReason').val()
+        'address_reason': $('#editAddressReason').val(),
+        'memo': $('#editMemo').val()
     };
 
     let pending = Object.keys(fields).length;
@@ -825,41 +970,53 @@ function onSaveDone(errors) {
     }
 }
 
+function showConfirm(title, message, onConfirm) {
+    $('#confirmModalTitle').text(title);
+    $('#confirmModalBody').html(message);
+    var modal = new bootstrap.Modal(document.getElementById('confirmModal'));
+    $('#confirmModalOk').off('click').on('click', function() {
+        modal.hide();
+        onConfirm();
+    });
+    modal.show();
+}
+
 function quickApprove(rowId) {
-    if (!confirm('Approve this match?')) return;
-    $.ajax({
-        url: '/api/update',
-        method: 'POST',
-        contentType: 'application/json',
-        data: JSON.stringify({ row_id: rowId, field: 'recommendation', value: 'APPROVED' }),
-        success: function() {
-            showToast('Approved', 'success');
-            table.ajax.reload(null, false);
-            loadStats();
-        },
-        error: function(xhr) { showToast('Failed', 'error'); }
+    showConfirm('Approve Record', '<i class="fas fa-check-circle text-success fa-2x mb-2"></i><br>Approve this record?', function() {
+        $.ajax({
+            url: '/api/update',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ row_id: rowId, field: 'recommendation', value: 'APPROVED' }),
+            success: function() {
+                showToast('Approved', 'success');
+                table.ajax.reload(null, false);
+                loadStats();
+            },
+            error: function(xhr) { showToast('Failed', 'error'); }
+        });
     });
 }
 
 function bulkApprove() {
     const n = selectedRows.size;
     if (n === 0) return;
-    if (!confirm(`Approve ${n} selected record(s)?`)) return;
-
-    $.ajax({
-        url: '/api/bulk_update',
-        method: 'POST',
-        contentType: 'application/json',
-        data: JSON.stringify({ row_ids: Array.from(selectedRows), recommendation: 'APPROVED' }),
-        success: function(data) {
-            showToast(`Approved ${data.updated} records`, 'success');
-            selectedRows.clear();
-            $('#selectAll').prop('checked', false);
-            updateSelectionInfo();
-            table.ajax.reload();
-            loadStats();
-        },
-        error: function() { showToast('Bulk approve failed', 'error'); }
+    showConfirm('Approve Selected', '<i class="fas fa-check-circle text-success fa-2x mb-2"></i><br>Approve <strong>' + n + '</strong> selected record' + (n > 1 ? 's' : '') + '?', function() {
+        $.ajax({
+            url: '/api/bulk_update',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ row_ids: Array.from(selectedRows), recommendation: 'APPROVED' }),
+            success: function(data) {
+                showToast(`Approved ${data.updated} records`, 'success');
+                selectedRows.clear();
+                $('#selectAll').prop('checked', false);
+                updateSelectionInfo();
+                table.ajax.reload();
+                loadStats();
+            },
+            error: function() { showToast('Bulk approve failed', 'error'); }
+        });
     });
 }
 
