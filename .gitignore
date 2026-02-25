@@ -6,3 +6,4 @@ temp_export_selected.xlsx
 # Data source configuration (may contain credentials)
 config.json
 datasources.json
+.env

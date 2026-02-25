@@ -9,18 +9,6 @@ body {
 #headerSection .mb-3 { margin-bottom: 0.5rem !important; }
 #headerSection .mb-2 { margin-bottom: 0.25rem !important; }
 
-/* DataTables controls relocated to header */
-#dtLengthPlaceholder .dataTables_length,
-#dtSearchPlaceholder .dataTables_filter { margin: 0; padding: 0; display: flex; align-items: center; }
-#dtLengthPlaceholder label,
-#dtSearchPlaceholder label { margin: 0; font-size: 0.82rem; display: flex; align-items: center; gap: 4px; white-space: nowrap; }
-#dtLengthPlaceholder select { height: 28px; font-size: 0.82rem; }
-#dtSearchPlaceholder input { height: 28px; font-size: 0.82rem; }
-
-/* Hide the empty wrapper slots left behind after relocation */
-#tableSection .dataTables_length,
-#tableSection .dataTables_filter { display: none; }
-
 /* Stats cards */
 .stat-card { transition: transform 0.15s; }
 .stat-card:hover { transform: translateY(-3px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
@@ -31,84 +19,137 @@ body {
 .rec-card { transition: transform 0.15s; }
 .rec-card:hover { transform: translateY(-2px); box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
 
-/* Table */
-#matchesTable { font-size: 0.82rem; }
-#matchesTable thead th {
-    background-color: #343a40;
-    color: white;
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    font-size: 0.8rem;
-    padding: 6px 8px;
+/* AG Grid theme overrides */
+.ag-theme-alpine {
+    --ag-font-size: 0.75rem;
+    --ag-row-height: 24px;
+    --ag-header-height: 26px;
+    --ag-header-background-color: #343a40;
+    --ag-header-foreground-color: white;
+    --ag-selected-row-background-color: #cfe2ff;
+    --ag-row-hover-color: #e9ecef;
+    --ag-odd-row-background-color: #f8f9fa;
+    --ag-cell-horizontal-padding: 4px;
+    --ag-cell-vertical-padding: 0px;
+    --ag-line-height: 20px;
 }
-#matchesTable tbody td { padding: 4px 8px; vertical-align: middle; -webkit-user-select: text !important; user-select: text !important; cursor: text; }
-#matchesTable_wrapper, #matchesTable, #tableSection { -webkit-user-select: text !important; user-select: text !important; }
-#matchesTable tbody tr:hover { background-color: #e9ecef !important; }
+
+/* Force all cells compact */
+.ag-theme-alpine .ag-cell {
+    line-height: 20px;
+    padding-top: 1px;
+    padding-bottom: 1px;
+}
+
+/* Canvas column headers (blue) */
+.ag-header-canvas { background-color: #3b6fc0 !important; }
+/* DEC column headers (mauve) */
+.ag-header-dec { background-color: #9b4d6e !important; }
+
+/* Trust highlight rows */
+.ag-row.trust-highlight { background-color: #ffe0b2 !important; }
+.ag-row.trust-highlight:hover { background-color: #ffcc80 !important; }
+
+/* Do-not-use cell highlight */
+.ag-cell.do-not-use-cell { background-color: #f8d7da !important; }
+
+/* Cell selection */
+.ag-cell.cell-selected { background-color: #b3d9ff !important; outline: 1px solid #0d6efd; }
+
+/* Search & Replace current match highlight */
+.ag-cell.sr-highlight { background-color: #ff6b6b !important; outline: 3px solid #dc3545; color: #fff !important; }
+.sr-match-text { background-color: #dc3545; color: #fff; font-weight: bold; padding: 0 2px; border-radius: 2px; }
+
+/* Row selection via checkbox */
+.ag-row.row-selected { background-color: #cfe2ff !important; }
 
 /* Score badges */
 .score-badge {
     display: inline-block;
-    padding: 2px 6px;
-    border-radius: 3px;
+    padding: 0 4px;
+    border-radius: 2px;
     font-weight: bold;
-    font-size: 0.8rem;
-    min-width: 32px;
+    font-size: 0.7rem;
+    min-width: 28px;
     text-align: center;
+    line-height: 18px;
 }
 .score-perfect { background-color: #28a745; color: white; }
 .score-high { background-color: #ffc107; color: black; }
 .score-medium { background-color: #fd7e14; color: white; }
 .score-low { background-color: #dc3545; color: white; }
 
-/* Truncate long text */
-.truncate {
-    max-width: 180px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 /* Recommendation column - clip long badges */
-td.rec-col { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
-
-/* Column resize handles */
-.col-resize-handle {
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    width: 6px;
-    cursor: col-resize;
-    z-index: 11;
-}
-.col-resize-handle:hover { background: rgba(255,255,255,0.3); }
-body.col-resizing { cursor: col-resize !important; user-select: none !important; }
-body.col-resizing * { cursor: col-resize !important; }
-
-/* Cell selection (column-confined) */
-.cell-selected { background-color: #b3d9ff !important; outline: 1px solid #0d6efd; }
-
-/* Row selection */
-.row-selected { background-color: #cfe2ff !important; }
+.ag-cell[col-id="recommendation"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Card defaults */
 .card { box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
 
-/* Scrollbar */
-#tableSection::-webkit-scrollbar { width: 8px; }
-#tableSection::-webkit-scrollbar-track { background: #f1f1f1; }
-#tableSection::-webkit-scrollbar-thumb { background: #aaa; border-radius: 4px; }
-#tableSection::-webkit-scrollbar-thumb:hover { background: #777; }
+/* Scrollbar for grid viewport */
+.ag-body-viewport::-webkit-scrollbar { width: 8px; }
+.ag-body-viewport::-webkit-scrollbar-track { background: #f1f1f1; }
+.ag-body-viewport::-webkit-scrollbar-thumb { background: #aaa; border-radius: 4px; }
+.ag-body-viewport::-webkit-scrollbar-thumb:hover { background: #777; }
 
-/* DataTables processing overlay */
-.dataTables_processing {
-    position: absolute !important;
-    top: 50% !important;
-    left: 50% !important;
-    transform: translate(-50%, -50%);
-    z-index: 100;
-    background: rgba(255,255,255,0.9) !important;
-    padding: 20px !important;
-    border-radius: 8px;
+/* Toast notifications */
+.toast-msg {
+    position: fixed; top: 70px; right: 20px; z-index: 10000;
+    color: white; padding: 10px 20px; border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3); font-size: 0.9rem;
+    animation: slideIn 0.3s ease-out;
 }
+@keyframes slideIn {
+    from { transform: translateX(300px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+/* Rec filter dropdown */
+.rec-multi-dropdown .dropdown-toggle {
+    font-size: 0.8rem;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.rec-filter-menu {
+    max-height: 320px;
+    overflow-y: auto;
+    min-width: 380px;
+    font-size: 0.8rem;
+}
+.rec-filter-item {
+    padding: 0.15rem 0.6rem;
+    cursor: pointer;
+}
+.rec-filter-item:active {
+    background-color: inherit;
+    color: inherit;
+}
+
+/* Column visibility dropdown */
+.col-vis-menu {
+    max-height: 400px;
+    overflow-y: auto;
+    min-width: 200px;
+    font-size: 0.8rem;
+}
+.col-vis-item {
+    padding: 0.15rem 0.6rem;
+    cursor: pointer;
+}
+.col-vis-item:active {
+    background-color: inherit;
+    color: inherit;
+}
+
+/* Center selection checkboxes */
+.ag-selection-checkbox { display: flex !important; justify-content: center; }
+.ag-header-select-all { display: flex !important; justify-content: center; }
+
+/* Center SSN/score badge cells */
+.ag-cell[col-id="ssn_match"],
+.ag-cell[col-id="name_score"],
+.ag-cell[col-id="address_score"] { text-align: center; }
+
+/* Enable text selection inside grid cells */
+.ag-cell { -webkit-user-select: text !important; user-select: text !important; cursor: text; }

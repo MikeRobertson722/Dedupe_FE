@@ -2,7 +2,7 @@
 import pytest
 from playwright.sync_api import Page, expect
 from helpers.selectors import *
-from helpers.wait_helpers import wait_for_modal_visible, wait_for_toast, wait_for_dt_reload
+from helpers.wait_helpers import wait_for_modal_visible, wait_for_toast, wait_for_grid_update
 
 
 class TestHelpModal:

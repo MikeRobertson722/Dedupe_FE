@@ -1,20 +1,16 @@
-"""Custom wait conditions for DataTables AJAX, modals, and animations."""
+"""Custom wait conditions for AG Grid, modals, and animations."""
 import re
 from playwright.sync_api import Page
 
 
-def wait_for_dt_reload(page: Page, timeout: int = 15000):
-    """Wait for DataTable to complete an AJAX reload."""
-    page.wait_for_function(
-        """() => {
-            const proc = document.querySelector('.dataTables_processing');
-            return !proc || proc.style.display === 'none' ||
-                   getComputedStyle(proc).display === 'none';
-        }""",
-        timeout=timeout
-    )
-    # Wait for either data rows or the "no data" row
-    page.wait_for_selector("#matchesTable tbody tr", timeout=timeout)
+def wait_for_grid_ready(page: Page, timeout: int = 30000):
+    """Wait for AG Grid to render rows."""
+    page.wait_for_selector("#matchesGrid .ag-row", timeout=timeout)
+
+
+def wait_for_grid_update(page: Page, timeout: int = 5000):
+    """Wait briefly for AG Grid to re-render after a filter/sort change."""
+    page.wait_for_timeout(500)
 
 
 def wait_for_modal_visible(page: Page, modal_selector: str, timeout: int = 5000):
@@ -36,14 +32,27 @@ def wait_for_toast(page: Page, expected_text: str = None, timeout: int = 5000):
     return toast
 
 
-def get_dt_records_filtered(page: Page) -> int:
-    """Extract the filtered record count from DataTables info text.
+def wait_for_sr_matches(page: Page, timeout: int = 5000):
+    """Wait for search & replace auto-find debounce + render."""
+    page.wait_for_timeout(600)
 
-    Parses 'Showing 1 to 100 of 10,051 entries' or
-    'Showing 1 to 100 of 2,345 entries (filtered from 10,051 total entries)'
+
+def wait_for_inline_save(page: Page, timeout: int = 3000):
+    """Wait for an inline edit AJAX call to complete."""
+    page.wait_for_timeout(500)
+
+
+def get_grid_info_counts(page: Page):
+    """Extract displayed and total record counts from grid info text.
+
+    Parses 'Showing 2,345 of 10,051 records'
+    Returns (displayed, total) tuple.
     """
-    info_text = page.text_content("#matchesTable_info") or ""
-    match = re.search(r'of ([\d,]+) entries', info_text)
+    info_text = page.text_content("#gridInfo") or ""
+    match = re.search(r'Showing ([\d,]+) of ([\d,]+)', info_text)
     if match:
-        return int(match.group(1).replace(',', ''))
-    return 0
+        return (
+            int(match.group(1).replace(',', '')),
+            int(match.group(2).replace(',', ''))
+        )
+    return (0, 0)

@@ -44,16 +44,16 @@ def app_server():
 
 @pytest.fixture(scope="function")
 def app_page(page: Page, app_server) -> Page:
-    """Navigate to the app and wait for DataTable to fully load."""
+    """Navigate to the app and wait for AG Grid to fully load."""
     page.goto(BASE_URL)
-    page.wait_for_selector("#matchesTable tbody tr td", timeout=30000)
+    page.wait_for_selector("#matchesGrid .ag-row", timeout=30000)
     page.wait_for_selector("#recBreakdown .col", timeout=15000)
     return page
 
 
 @pytest.fixture(scope="function")
 def app_page_fast(page: Page, app_server) -> Page:
-    """Navigate to the app without waiting for full DT init."""
+    """Navigate to the app without waiting for full grid init."""
     page.goto(BASE_URL)
     page.wait_for_load_state("domcontentloaded")
     return page

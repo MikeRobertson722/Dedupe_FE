@@ -40,3 +40,15 @@ def api_get_datasources() -> dict:
     r = requests.get(f"{BASE_URL}/api/datasources")
     r.raise_for_status()
     return r.json()
+
+
+def api_search_replace(search, replace="", column="all",
+                       case_sensitive=False, mode="find",
+                       row_ids=None):
+    payload = {"search": search, "replace": replace, "column": column,
+               "case_sensitive": case_sensitive, "mode": mode}
+    if row_ids is not None:
+        payload["row_ids"] = row_ids
+    r = requests.post(f"{BASE_URL}/api/search_replace", json=payload)
+    r.raise_for_status()
+    return r.json()

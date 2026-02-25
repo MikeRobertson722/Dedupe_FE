@@ -1,15 +1,23 @@
 """
 BA Deduplication Review Application
-Web interface for reviewing and updating canvas_dec_matches data from multiple sources
+Web interface for reviewing and updating import_merge_matches data via Snowflake
 """
-from flask import Flask, render_template, request, jsonify, send_file, Response
+from flask import Flask, render_template, request, jsonify, Response
+import os
 import pandas as pd
-import sqlite3
-import threading
 import json
 from pathlib import Path
 from datetime import datetime
-from data_loader import load_data, save_data
+from dotenv import load_dotenv
+
+# Load .env file (must be before any config reads os.environ)
+load_dotenv(Path(__file__).parent / '.env')
+
+from data_loader import (
+    load_data, get_snowflake_connection, merge_changes_to_snowflake,
+    write_audit_log_to_snowflake, read_audit_log_from_snowflake,
+    ensure_snowflake_schema
+)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'dev-secret-key-change-in-production'
@@ -26,74 +34,35 @@ def add_no_cache_headers(response):
         response.headers['Expires'] = '0'
     return response
 
-# Load data source configurations
-DATASOURCES_FILE = Path(__file__).parent / 'datasources.json'
-if not DATASOURCES_FILE.exists():
-    # Fallback to old config.json if datasources.json doesn't exist
-    CONFIG_FILE = Path('config.json')
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, 'r') as f:
-            DATA_CONFIG = json.load(f)
-        _active_source = 'default'
-        _datasources = {'default': DATA_CONFIG}
-    else:
-        raise FileNotFoundError("Neither datasources.json nor config.json found")
-else:
-    with open(DATASOURCES_FILE, 'r') as f:
-        _ds_config = json.load(f)
-        _datasources = _ds_config.get('datasources', {})
-        _active_source = _ds_config.get('active', list(_datasources.keys())[0])
-        DATA_CONFIG = _datasources.get(_active_source, {})
+# Build Snowflake config from .env (all connection info lives in environment variables)
+DATA_CONFIG = {
+    'source_type': 'snowflake',
+    'name': 'Snowflake (Cloud)',
+    'account': os.environ.get('SNOWFLAKE_ACCOUNT', ''),
+    'user': os.environ.get('SNOWFLAKE_USER', ''),
+    'password': os.environ.get('SNOWFLAKE_PASSWORD', ''),
+    'database': os.environ.get('SNOWFLAKE_DATABASE', 'dgo_ma'),
+    'schema': os.environ.get('SNOWFLAKE_SCHEMA', 'ba_process'),
+    'warehouse': os.environ.get('SNOWFLAKE_WAREHOUSE', ''),
+    'table': os.environ.get('SNOWFLAKE_TABLE', 'import_merge_matches'),
+}
 
-# Legacy DB path for update_log (still using SQLite for audit trail)
-DB_PATH = r'C:\ClaudeMain\BA_Dedup2\BA_Dedup2\ba_dedup.db'
+if not DATA_CONFIG['account']:
+    raise ValueError("SNOWFLAKE_ACCOUNT not set. Check your .env file.")
 
-# In-memory cache to avoid re-reading data source on every request
+# In-memory cache to avoid re-reading Snowflake on every request
 _df_cache = None
 _df_cache_time = None
 
-# Track unsaved jib/rev/vendor changes: {row_id: {field: new_value, ...}, ...}
+# Track unsaved changes: {row_id: {field: (old_value, new_value), ...}, ...}
 _pending_changes = {}
 
-# Lock to prevent concurrent background saves from corrupting the database
-_save_lock = threading.Lock()
+# Cached ba_config score ranges (loaded once at first stats call)
+_ba_config_cache = None
 
 
-def _ensure_indexes():
-    """Create indexes on filterable/sortable columns and composite key used by UPDATE queries"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        # Composite index for UPDATE WHERE canvas_id = ? AND canvas_ssn = ?
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_canvas_id_ssn ON canvas_dec_matches(canvas_id, canvas_ssn)")
-        # Filter columns
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_recommendation ON canvas_dec_matches(recommendation)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_ssn_match ON canvas_dec_matches(ssn_match)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_name_score ON canvas_dec_matches(name_score)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_address_score ON canvas_dec_matches(address_score)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_canvas_id ON canvas_dec_matches(canvas_id)")
-        # Sort/search columns
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_canvas_name ON canvas_dec_matches(canvas_name)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_dec_name ON canvas_dec_matches(dec_name)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_dec_hdrcode ON canvas_dec_matches(dec_hdrcode)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_how_to_process ON canvas_dec_matches(how_to_process)")
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Index creation skipped: {e}")
-
-
-_ensure_indexes()
-
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def load_excel_data(force_reload=False):
-    """Load data from configured source, cached in memory"""
+def load_cached_data(force_reload=False):
+    """Load data from Snowflake, cached in memory"""
     global _df_cache, _df_cache_time
 
     if _df_cache is None or force_reload:
@@ -103,19 +72,41 @@ def load_excel_data(force_reload=False):
     return _df_cache
 
 
-def save_excel_data(df):
-    """Save DataFrame back to configured data source and update cache"""
-    global _df_cache
-    _df_cache = df
-    # Write to data source in background thread so the API response returns immediately
-    df_copy = df.copy()
-    config_copy = DATA_CONFIG.copy()
-
-    def _locked_save():
-        with _save_lock:
-            save_data(df_copy, config_copy)
-
-    threading.Thread(target=_locked_save, daemon=True).start()
+def _load_ba_config():
+    """Load ba_config score ranges from Snowflake, cached after first successful call."""
+    global _ba_config_cache
+    if _ba_config_cache:
+        return _ba_config_cache
+    try:
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT CONFIG_KEY, CONFIG_VALUE FROM BA_CONFIG WHERE CATEGORY = 'BUCKETS'")
+        rows = {r[0]: r[1] for r in cursor.fetchall()}
+        print(f"  BA_CONFIG loaded: {len(rows)} score params")
+        _ba_config_cache = {
+            'NEW BA AND NEW ADDRESS': {
+                'min_name': rows.get('NEW_BA_NEW_ADDR_MIN_NAME_SCORE', ''),
+                'max_name': rows.get('NEW_BA_NEW_ADDR_MAX_NAME_SCORE', ''),
+                'min_addr': rows.get('NEW_BA_NEW_ADDR_MIN_ADDR_SCORE', ''),
+                'max_addr': rows.get('NEW_BA_NEW_ADDR_MAX_ADDR_SCORE', ''),
+            },
+            'EXISTING BA ADD NEW ADDRESS': {
+                'min_name': rows.get('EXISTING_BA_NEW_ADDR_MIN_NAME_SCORE', ''),
+                'max_name': rows.get('EXISTING_BA_NEW_ADDR_MAX_NAME_SCORE', ''),
+                'min_addr': rows.get('EXISTING_BA_NEW_ADDR_MIN_ADDR_SCORE', ''),
+                'max_addr': rows.get('EXISTING_BA_NEW_ADDR_MAX_ADDR_SCORE', ''),
+            },
+            'EXISTING BA AND EXISTING ADDRESS': {
+                'min_name': rows.get('EXISTING_BA_EXISTING_ADDR_MIN_NAME_SCORE', ''),
+                'max_name': rows.get('EXISTING_BA_EXISTING_ADDR_MAX_NAME_SCORE', ''),
+                'min_addr': rows.get('EXISTING_BA_EXISTING_ADDR_MIN_ADDR_SCORE', ''),
+                'max_addr': rows.get('EXISTING_BA_EXISTING_ADDR_MAX_ADDR_SCORE', ''),
+            },
+        }
+    except Exception as e:
+        print(f"  BA_CONFIG error: {e}")
+        _ba_config_cache = None
+    return _ba_config_cache or {}
 
 
 @app.route('/')
@@ -127,7 +118,7 @@ def index():
 def get_recommendations():
     """Get distinct recommendation values from the data"""
     try:
-        df = load_excel_data()
+        df = load_cached_data()
         if df.empty:
             return jsonify([])
         values = sorted(df['recommendation'].dropna().unique().tolist())
@@ -140,7 +131,7 @@ def get_recommendations():
 def get_matches():
     """Server-side DataTables endpoint"""
     try:
-        df = load_excel_data()
+        df = load_cached_data()
 
         if df.empty:
             return jsonify({'data': [], 'recordsTotal': 0, 'recordsFiltered': 0})
@@ -221,12 +212,12 @@ def get_matches():
 
         # Only send columns the frontend needs (skip internal/unused fields)
         needed_cols = [
-            'id', 'ssn_match', 'name_score', 'address_score', 'recommendation',
+            'id', 'ssn_match', 'name_score', 'address_score', 'nameaddrscore', 'recommendation',
             'how_to_process', 'canvas_id', 'canvas_addrseq', 'canvas_name',
             'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip', 'canvas_ssn',
             'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
             'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
-            'address_reason', 'jib', 'rev', 'vendor', 'memo'
+            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust'
         ]
         available = [c for c in needed_cols if c in df_page.columns]
         df_out = df_page[available].fillna('')
@@ -251,7 +242,7 @@ def get_matches():
 @app.route('/api/stats')
 def get_stats():
     try:
-        df = load_excel_data()
+        df = load_cached_data()
         if df.empty:
             return jsonify({'error': 'No data available'}), 404
 
@@ -264,6 +255,9 @@ def get_stats():
             'ssn_partial_matches': int(((df['ssn_match'] > 0) & (df['ssn_match'] < 100)).sum()),
             'ssn_no_match': int((df['ssn_match'] == 0).sum()),
         }
+
+        stats['rec_config'] = _load_ba_config()
+
         return jsonify(stats)
 
     except Exception as e:
@@ -273,7 +267,7 @@ def get_stats():
 @app.route('/api/record/<int:row_id>')
 def get_record(row_id):
     try:
-        df = load_excel_data()
+        df = load_cached_data()
         if row_id >= len(df):
             return jsonify({'error': 'Invalid row_id'}), 404
 
@@ -288,7 +282,7 @@ def get_record(row_id):
 
 @app.route('/api/update', methods=['POST'])
 def update_record():
-    """Update a single field on a record. JIB/Rev/Vendor are deferred (in-memory only until Save)."""
+    """Update a single field on a record. All changes are deferred until Save."""
     global _pending_changes
     try:
         data = request.json
@@ -300,56 +294,41 @@ def update_record():
             return jsonify({'error': 'Missing required fields'}), 400
 
         allowed_fields = {
-            'recommendation', 'dec_hdrcode', 'dec_name', 'dec_address',
-            'dec_city', 'dec_state', 'dec_zip', 'dec_contact', 'address_reason',
+            'recommendation', 'canvas_name', 'canvas_address',
+            'canvas_city', 'canvas_state', 'canvas_zip', 'address_reason',
             'jib', 'rev', 'vendor', 'how_to_process', 'memo'
         }
         if field not in allowed_fields:
             return jsonify({'error': f'Field "{field}" cannot be updated'}), 400
 
-        df = load_excel_data()
+        df = load_cached_data()
         if row_id >= len(df):
             return jsonify({'error': 'Invalid row_id'}), 400
 
-        # For jib/rev/vendor/how_to_process: update in-memory only, track as pending
-        if field in ('jib', 'rev', 'vendor', 'how_to_process'):
-            coerced = value if field == 'how_to_process' else int(value)
-            df.at[row_id, field] = coerced
-            if row_id not in _pending_changes:
-                _pending_changes[row_id] = {}
-            _pending_changes[row_id][field] = coerced
-            return jsonify({
-                'success': True,
-                'pending_count': len(_pending_changes),
-                'message': 'Updated (unsaved)'
-            })
+        # Coerce value types
+        if field in ('jib', 'rev', 'vendor'):
+            value = int(value)
 
-        # For other fields: immediate save to DB + Excel
-        record = df.iloc[row_id]
-        old_value = str(record.get(field, ''))
-        canvas_id = str(record.get('canvas_id', ''))
-        canvas_ssn = str(record.get('canvas_ssn', ''))
+        # Capture old value before updating
+        old_value = df.at[row_id, field]
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            f"UPDATE canvas_dec_matches SET {field} = ? WHERE canvas_id = ? AND canvas_ssn = ?",
-            (value, canvas_id, canvas_ssn)
-        )
-        cursor.execute("""
-            INSERT INTO update_log (canvas_id, canvas_ssn, field_name, old_value, new_value, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (canvas_id, canvas_ssn, field, old_value, value, datetime.now()))
-        conn.commit()
-        conn.close()
-
+        # Update in-memory DataFrame
         df.at[row_id, field] = value
-        save_excel_data(df)
+
+        # Track as pending with (old_value, new_value)
+        if row_id not in _pending_changes:
+            _pending_changes[row_id] = {}
+        # Only store the first old_value (the original before any edits this session)
+        if field not in _pending_changes[row_id]:
+            _pending_changes[row_id][field] = (str(old_value), value)
+        else:
+            orig_old = _pending_changes[row_id][field][0]
+            _pending_changes[row_id][field] = (orig_old, value)
 
         return jsonify({
             'success': True,
             'pending_count': len(_pending_changes),
-            'message': 'Record updated'
+            'message': 'Updated (unsaved)'
         })
 
     except Exception as e:
@@ -358,7 +337,8 @@ def update_record():
 
 @app.route('/api/bulk_update', methods=['POST'])
 def bulk_update():
-    """Bulk update recommendation for multiple records"""
+    """Bulk update recommendation for multiple records (deferred until Save)."""
+    global _pending_changes
     try:
         data = request.json
         row_ids = data.get('row_ids', [])
@@ -367,11 +347,7 @@ def bulk_update():
         if not row_ids:
             return jsonify({'error': 'No row IDs provided'}), 400
 
-        df = load_excel_data()
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        now = datetime.now()
-
+        df = load_cached_data()
         success_count = 0
         errors = []
 
@@ -381,60 +357,54 @@ def bulk_update():
                     errors.append(f"Invalid row_id: {row_id}")
                     continue
 
-                record = df.iloc[row_id]
-                canvas_id = str(record.get('canvas_id', ''))
-                canvas_ssn = str(record.get('canvas_ssn', ''))
-                old_rec = str(record.get('recommendation', ''))
-
-                cursor.execute(
-                    "UPDATE canvas_dec_matches SET recommendation = ? WHERE canvas_id = ? AND canvas_ssn = ?",
-                    (new_recommendation, canvas_id, canvas_ssn)
-                )
-                cursor.execute("""
-                    INSERT INTO update_log (canvas_id, canvas_ssn, field_name, old_value, new_value, updated_at)
-                    VALUES (?, ?, 'recommendation', ?, ?, ?)
-                """, (canvas_id, canvas_ssn, old_rec, new_recommendation, now))
-
+                old_rec = str(df.at[row_id, 'recommendation'] or '')
                 df.at[row_id, 'recommendation'] = new_recommendation
+
+                if row_id not in _pending_changes:
+                    _pending_changes[row_id] = {}
+                if 'recommendation' not in _pending_changes[row_id]:
+                    _pending_changes[row_id]['recommendation'] = (old_rec, new_recommendation)
+                else:
+                    orig_old = _pending_changes[row_id]['recommendation'][0]
+                    _pending_changes[row_id]['recommendation'] = (orig_old, new_recommendation)
+
                 success_count += 1
 
             except Exception as e:
                 errors.append(f"Row {row_id}: {str(e)}")
 
-        conn.commit()
-        conn.close()
-        save_excel_data(df)
-
         return jsonify({
             'success': True,
             'updated': success_count,
-            'errors': errors
+            'errors': errors,
+            'pending_count': len(_pending_changes)
         })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/export_selected')
-def export_selected():
-    """Export only selected rows with JIB/Rev/Vendor columns"""
+@app.route('/api/matches_all')
+def get_matches_all():
+    """Return full dataset as JSON for AG Grid client-side processing"""
     try:
-        row_ids_str = request.args.get('row_ids', '')
-        if not row_ids_str:
-            return jsonify({'error': 'No row IDs provided'}), 400
+        df = load_cached_data()
+        if df.empty:
+            return Response('[]', mimetype='application/json')
 
-        row_ids = [int(x) for x in row_ids_str.split(',')]
-        df = load_excel_data()
-        df_selected = df.iloc[row_ids].copy()
-
-        export_path = Path('temp_export_selected.xlsx')
-        df_selected.to_excel(export_path, index=False)
-
-        return send_file(
-            export_path,
-            as_attachment=True,
-            download_name=f'selected_export_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
-        )
+        needed_cols = [
+            'id', 'ssn_match', 'name_score', 'address_score', 'nameaddrscore', 'recommendation',
+            'how_to_process', 'canvas_id', 'canvas_addrseq', 'canvas_name',
+            'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip', 'canvas_ssn',
+            'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
+            'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
+            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust'
+        ]
+        available = [c for c in needed_cols if c in df.columns]
+        df_out = df[available].fillna('').copy()
+        df_out['_row_id'] = df.index.tolist()
+        result = df_out.to_json(orient='records', default_handler=str)
+        return Response(result, mimetype='application/json')
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -456,25 +426,104 @@ def dev_notes():
     return jsonify({'message': 'Opened in Word'})
 
 
-@app.route('/api/export')
-def export_data():
+
+
+@app.route('/api/search_replace', methods=['POST'])
+def search_replace():
+    """Search and replace text in one or all text columns (deferred until Save)."""
+    global _pending_changes
     try:
-        df = load_excel_data()
+        data = request.json
+        search = data.get('search', '')
+        replace = data.get('replace', '')
+        column = data.get('column', 'all')
+        case_sensitive = data.get('case_sensitive', False)
+        mode = data.get('mode', 'find')  # 'find' or 'replace'
 
-        recommendation_filter = request.args.get('recommendation', default='')
-        if recommendation_filter:
-            rec_values = [v.strip() for v in recommendation_filter.split(',') if v.strip()]
-            if rec_values:
-                df = df[df['recommendation'].isin(rec_values)]
+        if not search:
+            return jsonify({'error': 'Search text is required'}), 400
 
-        export_path = Path('temp_export.xlsx')
-        df.to_excel(export_path, index=False)
+        text_fields = {
+            'canvas_name', 'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip',
+            'recommendation', 'how_to_process', 'memo', 'address_reason'
+        }
 
-        return send_file(
-            export_path,
-            as_attachment=True,
-            download_name=f'matches_export_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
-        )
+        if column == 'all':
+            cols_to_search = list(text_fields)
+        elif column in text_fields:
+            cols_to_search = [column]
+        else:
+            return jsonify({'error': f'Column "{column}" is not searchable'}), 400
+
+        df_full = load_cached_data()
+        if df_full.empty:
+            return jsonify({'matches': 0, 'rows': 0})
+
+        # Restrict to visible/filtered rows if provided
+        row_ids = data.get('row_ids')
+        if row_ids is not None:
+            df = df_full.loc[df_full.index.isin(row_ids)]
+        else:
+            df = df_full
+
+        # Count matches
+        match_count = 0
+        match_rows = set()
+        for col in cols_to_search:
+            if col not in df.columns:
+                continue
+            series = df[col].astype(str).fillna('')
+            if case_sensitive:
+                mask = series.str.contains(search, case=True, na=False, regex=False)
+            else:
+                mask = series.str.contains(search, case=False, na=False, regex=False)
+            hits = mask.sum()
+            match_count += hits
+            match_rows.update(df.index[mask].tolist())
+
+        if mode == 'find':
+            return jsonify({'matches': int(match_count), 'rows': len(match_rows)})
+
+        # Replace mode
+        if not match_rows:
+            return jsonify({'replaced': 0, 'rows': 0, 'pending_count': len(_pending_changes)})
+
+        replaced_count = 0
+        replaced_rows = set()
+        for col in cols_to_search:
+            if col not in df.columns:
+                continue
+            for idx in list(match_rows):
+                old_val = str(df_full.at[idx, col]) if pd.notna(df_full.at[idx, col]) else ''
+                if case_sensitive:
+                    if search not in old_val:
+                        continue
+                    new_val = old_val.replace(search, replace)
+                else:
+                    # Case-insensitive replace
+                    import re
+                    new_val = re.sub(re.escape(search), replace, old_val, flags=re.IGNORECASE)
+                    if new_val == old_val:
+                        continue
+
+                df_full.at[idx, col] = new_val
+                replaced_count += 1
+                replaced_rows.add(idx)
+
+                # Track in pending changes
+                if idx not in _pending_changes:
+                    _pending_changes[idx] = {}
+                if col not in _pending_changes[idx]:
+                    _pending_changes[idx][col] = (old_val, new_val)
+                else:
+                    orig_old = _pending_changes[idx][col][0]
+                    _pending_changes[idx][col] = (orig_old, new_val)
+
+        return jsonify({
+            'replaced': replaced_count,
+            'rows': len(replaced_rows),
+            'pending_count': len(_pending_changes)
+        })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -494,7 +543,7 @@ def import_ids():
         if not canvas_ids:
             return jsonify({'error': 'No Canvas IDs provided'}), 400
 
-        df = load_excel_data()
+        df = load_cached_data()
 
         # Convert canvas_id column to string for matching
         df_canvas_str = df['canvas_id'].astype(str).str.strip()
@@ -516,11 +565,15 @@ def import_ids():
         # Update in-memory DataFrame only (vectorized)
         df.loc[row_ids, field] = 1
 
-        # Track as pending
+        # Track as pending with (old_value, new_value)
         for rid in row_ids:
             if rid not in _pending_changes:
                 _pending_changes[rid] = {}
-            _pending_changes[rid][field] = 1
+            if field not in _pending_changes[rid]:
+                _pending_changes[rid][field] = ('0', 1)
+            else:
+                orig_old = _pending_changes[rid][field][0]
+                _pending_changes[rid][field] = (orig_old, 1)
 
         return jsonify({
             'success': True,
@@ -536,50 +589,33 @@ def import_ids():
 
 @app.route('/api/save_changes', methods=['POST'])
 def save_changes():
-    """Persist all pending jib/rev/vendor changes to DB and Excel"""
+    """Persist all pending changes to Snowflake"""
     global _pending_changes
     try:
         if not _pending_changes:
             return jsonify({'success': True, 'saved': 0, 'pending_count': 0,
                             'message': 'Nothing to save'})
 
-        df = load_excel_data()
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        df = load_cached_data()
         now = datetime.now()
 
-        update_params = []  # [(value, canvas_id, canvas_ssn)]
-        log_params = []
-
+        # Build audit log entries from pending changes
+        log_entries = []
         for row_id, fields in _pending_changes.items():
             cid = str(df.at[row_id, 'canvas_id'])
             ssn = str(df.at[row_id, 'canvas_ssn'])
-            for field, new_val in fields.items():
-                update_params.append((new_val, field, cid, ssn))
-                old_val = '' if isinstance(new_val, str) else str(1 - new_val)
-                log_params.append((cid, ssn, field, old_val, str(new_val), now))
+            for field, change in fields.items():
+                if isinstance(change, tuple):
+                    old_val, new_val = change
+                else:
+                    old_val, new_val = '', change
+                log_entries.append((cid, ssn, field, str(old_val), str(new_val), now))
 
-        # Batch update DB — group by field for executemany
-        by_field = {}
-        for new_val, field, cid, ssn in update_params:
-            by_field.setdefault(field, []).append((new_val, cid, ssn))
+        # Write changes to Snowflake via MERGE
+        affected = merge_changes_to_snowflake(DATA_CONFIG, _pending_changes, df)
 
-        for field, params in by_field.items():
-            cursor.executemany(
-                f"UPDATE canvas_dec_matches SET {field} = ? WHERE canvas_id = ? AND canvas_ssn = ?",
-                params
-            )
-
-        # Batch insert audit log
-        cursor.executemany(
-            "INSERT INTO update_log (canvas_id, canvas_ssn, field_name, old_value, new_value, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            log_params
-        )
-
-        conn.commit()
-        conn.close()
-
-        save_excel_data(df)
+        # Write audit log to Snowflake
+        write_audit_log_to_snowflake(DATA_CONFIG, log_entries)
 
         saved_count = len(_pending_changes)
         _pending_changes = {}
@@ -588,7 +624,7 @@ def save_changes():
             'success': True,
             'saved': saved_count,
             'pending_count': 0,
-            'message': f'Saved {saved_count} record(s) to database'
+            'message': f'Saved {saved_count} record(s) to Snowflake ({affected} rows updated)'
         })
 
     except Exception as e:
@@ -599,7 +635,7 @@ def save_changes():
 def reload_data():
     """Force reload data from the configured source (clears in-memory cache)"""
     try:
-        df = load_excel_data(force_reload=True)
+        df = load_cached_data(force_reload=True)
         return jsonify({
             'success': True,
             'records': len(df),
@@ -611,15 +647,9 @@ def reload_data():
 
 @app.route('/api/update_log')
 def get_update_log():
-    """View recent update history"""
+    """View recent update history from Snowflake"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM update_log ORDER BY updated_at DESC LIMIT 100
-        """)
-        rows = [dict(r) for r in cursor.fetchall()]
-        conn.close()
+        rows = read_audit_log_from_snowflake(DATA_CONFIG, limit=100)
         return jsonify(rows)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -627,91 +657,20 @@ def get_update_log():
 
 @app.route('/api/datasources')
 def get_datasources():
-    """Get list of available data sources"""
-    try:
-        if not DATASOURCES_FILE.exists():
-            return jsonify({'error': 'datasources.json not found'}), 404
-
-        with open(DATASOURCES_FILE, 'r') as f:
-            ds_config = json.load(f)
-
-        datasources_list = []
-        for key, config in ds_config.get('datasources', {}).items():
-            datasources_list.append({
-                'id': key,
-                'name': config.get('name', key),
-                'type': config.get('source_type', 'unknown')
-            })
-
-        return jsonify({
-            'datasources': datasources_list,
-            'active': ds_config.get('active', '')
-        })
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/switch_datasource', methods=['POST'])
-def switch_datasource():
-    """Switch to a different data source"""
-    global DATA_CONFIG, _active_source, _df_cache
-
-    try:
-        data = request.json
-        source_id = data.get('source_id')
-        file_path = data.get('file_path')  # optional: override file path for excel
-
-        if not source_id:
-            return jsonify({'error': 'source_id is required'}), 400
-
-        if not DATASOURCES_FILE.exists():
-            return jsonify({'error': 'datasources.json not found'}), 404
-
-        # Read current config
-        with open(DATASOURCES_FILE, 'r') as f:
-            ds_config = json.load(f)
-
-        # Validate source exists
-        if source_id not in ds_config.get('datasources', {}):
-            return jsonify({'error': f'Data source "{source_id}" not found'}), 404
-
-        # If a file_path was provided (Excel file picker), update the config
-        if file_path and ds_config['datasources'][source_id].get('source_type') == 'excel':
-            ds_config['datasources'][source_id]['file_path'] = file_path
-
-        # Update active source
-        ds_config['active'] = source_id
-
-        # Save updated config
-        with open(DATASOURCES_FILE, 'w') as f:
-            json.dump(ds_config, f, indent=2)
-
-        # Update runtime config
-        _active_source = source_id
-        DATA_CONFIG = ds_config['datasources'][source_id]
-
-        # Clear cache to force reload
-        _df_cache = None
-
-        # Load new data to verify it works
-        df = load_excel_data(force_reload=True)
-
-        return jsonify({
-            'success': True,
-            'active': source_id,
-            'name': DATA_CONFIG.get('name', source_id),
-            'records': len(df),
-            'message': f'Switched to {DATA_CONFIG.get("name", source_id)}'
-        })
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    """Return the active Snowflake data source info"""
+    return jsonify({
+        'datasources': [{
+            'id': 'snowflake',
+            'name': DATA_CONFIG.get('name', 'Snowflake'),
+            'type': 'snowflake'
+        }],
+        'active': 'snowflake'
+    })
 
 
 @app.route('/api/browse_excel')
 def browse_excel():
-    """Open a native file dialog to pick an Excel file"""
+    """Open a native file dialog to pick a CSV/Excel file for Canvas ID import"""
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -725,7 +684,7 @@ def browse_excel():
         root.attributes('-topmost', True)
 
         file_path = filedialog.askopenfilename(
-            title='Select Excel File',
+            title='Select File for Import',
             initialdir=default_dir,
             filetypes=[('Excel files', '*.xlsx *.xls'), ('CSV files', '*.csv'), ('All files', '*.*')]
         )
@@ -741,56 +700,22 @@ def browse_excel():
         return jsonify({'error': str(e)}), 500
 
 
-def init_database():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS update_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            canvas_id TEXT,
-            canvas_ssn TEXT,
-            field_name TEXT,
-            old_value TEXT,
-            new_value TEXT,
-            updated_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    # Add jib/rev/vendor columns to canvas_dec_matches if missing
-    cursor.execute("PRAGMA table_info(canvas_dec_matches)")
-    existing_cols = {row[1] for row in cursor.fetchall()}
-    for col in ('jib', 'rev', 'vendor'):
-        if col not in existing_cols:
-            cursor.execute(f"ALTER TABLE canvas_dec_matches ADD COLUMN {col} INTEGER DEFAULT 0")
-    if 'memo' not in existing_cols:
-        cursor.execute("ALTER TABLE canvas_dec_matches ADD COLUMN memo TEXT DEFAULT ''")
-    conn.commit()
-    conn.close()
-
-
 if __name__ == '__main__':
-    init_database()
+    # Ensure Snowflake tables have required schema
+    try:
+        ensure_snowflake_schema(DATA_CONFIG)
+        print("  Snowflake schema verified")
+    except Exception as e:
+        print(f"  WARNING: Could not verify Snowflake schema: {e}")
 
     print('\n' + '='*60)
     print('  BA DEDUPLICATION REVIEW APPLICATION')
     print('='*60)
+    print(f'  Data Source: SNOWFLAKE')
+    print(f'  Account: {DATA_CONFIG.get("account")}')
+    print(f'  Database: {DATA_CONFIG.get("database")}.{DATA_CONFIG.get("schema")}.{DATA_CONFIG.get("table")}')
 
-    # Display data source configuration
-    source_type = DATA_CONFIG.get('source_type', 'unknown').upper()
-    print(f'  Data Source: {source_type}')
-
-    if source_type == 'EXCEL':
-        print(f'  File: {DATA_CONFIG.get("file_path")}')
-    elif source_type == 'SQLITE':
-        print(f'  Database: {DATA_CONFIG.get("db_path")}')
-        print(f'  Table: {DATA_CONFIG.get("table_name")}')
-    elif source_type == 'SNOWFLAKE':
-        print(f'  Account: {DATA_CONFIG.get("account")}')
-        print(f'  Database: {DATA_CONFIG.get("database")}.{DATA_CONFIG.get("schema")}.{DATA_CONFIG.get("table")}')
-
-    print(f'  Audit Log: {DB_PATH}')
-
-    df = load_excel_data()
+    df = load_cached_data()
     print(f'  Records loaded: {len(df):,}')
     if not df.empty and 'recommendation' in df.columns:
         print(f'  Recommendations: {df["recommendation"].value_counts().to_dict()}')

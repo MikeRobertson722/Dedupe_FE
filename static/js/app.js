@@ -1,35 +1,38 @@
-let table;
+let gridApi;
 let selectedRows = new Set();
 let editModal;
 let recommendationValues = [];
 let pendingCount = 0;
+let allRowData = [];
+let activeRecFilter = '';
 
-// Pattern to detect "do not use" variations: DO NOT USE, DON'T USE, DONT USE, D.N.U., DNU, DNU, etc.
-const DO_NOT_USE_RE = /do\s*n[o']?t\s*use|don[''\u2019]t\s*use|d\.?n\.?u\.?(?!\w)/i;
+// Undo/Redo stacks
+var undoStack = [];
+var redoStack = [];
+var UNDO_MAX = 50;
 
-// Preferred display order for recommendations (dropdown, stats cards)
+// Pattern to detect "do not use" variations
+const DO_NOT_USE_RE = /do\s*n[o']?t\s*use|don['\u2019]t\s*use|d\.?n\.?u\.?(?!\w)/i;
+
+// Preferred display order for recommendations
 const REC_ORDER = [
-    'NEW BA - NO DEC MATCH',
-    'LIKELY BA MATCH - SSN MATCH NAME MISMATCH',
-    'EXISTING BA - EXISTING ADDRESS',
-    'EXISTING BA - LIKELY SAME ADDRESS',
-    'EXISTING BA - NEW ADDRESS',
-    'NEW BA - NO SSN',
-    'NEW BA - INVALID SSN',
-    'APPROVED'
+    'NEW BA AND NEW ADDRESS',
+    'EXISTING BA ADD NEW ADDRESS',
+    'EXISTING BA AND EXISTING ADDRESS',
+    'NEEDS REVIEW',
+    'PROCESSED'
 ];
 
 // Color map for recommendation badges
 const REC_COLORS = {
-    'EXISTING BA - EXISTING ADDRESS': '#28a745',
-    'EXISTING BA - NEW ADDRESS': '#17a2b8',
-    'EXISTING BA - LIKELY SAME ADDRESS': '#20c997',
-    'NEW BA - NO DEC MATCH': '#6c757d',
-    'NEW BA - NO SSN': '#fd7e14',
-    'NEW BA - INVALID SSN': '#dc3545',
-    'LIKELY BA MATCH - SSN MATCH NAME MISMATCH': '#ffc107',
-    'APPROVED': '#0d6efd'
+    'NEW BA AND NEW ADDRESS': '#6c757d',
+    'EXISTING BA ADD NEW ADDRESS': '#fd7e14',
+    'EXISTING BA AND EXISTING ADDRESS': '#28a745',
+    'NEEDS REVIEW': '#ffc107',
+    'PROCESSED': '#0d6efd'
 };
+
+const PROCESS_OPTS = ['Add new BA and address', 'Add address to existing BA', 'Merge BA and address', 'Manual Review - DNP'];
 
 function sortByRecOrder(items) {
     return items.sort(function(a, b) {
@@ -43,6 +46,7 @@ function sortByRecOrder(items) {
     });
 }
 
+// ── Recommendation filter dropdown ──
 function buildRecFilterDropdown(recs) {
     var $c = $('#recFilterContainer');
     var html = '<div class="dropdown rec-multi-dropdown">';
@@ -63,61 +67,55 @@ function buildRecFilterDropdown(recs) {
     });
     html += '</div></div>';
     $c.html(html);
-
     $c.on('change', '.rec-check', function() {
         updateRecFilterLabel();
-        applyFilters();
+        onExternalFilterChanged();
     });
 }
 
 function getSelectedRecs() {
     var checked = [];
-    $('.rec-check:checked').each(function() {
-        checked.push($(this).val());
-    });
+    $('.rec-check:checked').each(function() { checked.push($(this).val()); });
     return checked;
 }
 
 function updateRecFilterLabel() {
     var checked = getSelectedRecs();
     var label;
-    if (checked.length === 0) {
-        label = 'All';
-    } else if (checked.length === 1) {
-        label = checked[0];
-    } else {
-        label = checked.length + ' selected';
-    }
+    if (checked.length === 0) label = 'All';
+    else if (checked.length === 1) label = checked[0];
+    else label = checked.length + ' selected';
     $('.rec-filter-label').text(label);
 }
 
 function toggleAllRecs(selectAll) {
     $('.rec-check').prop('checked', selectAll);
     updateRecFilterLabel();
-    applyFilters();
+    onExternalFilterChanged();
 }
 
-// Column visibility dropdown  [label, header color, column name, default visible]
+// ── Column visibility dropdown ──
 const COL_DEFS = [
     ['UID', '#212529', 'uid', false],
-    ['SSN', '#212529', 'ssn'],
+    ['SSN', '#212529', 'ssn_match'],
     ['Name Score', '#212529', 'name_score'],
-    ['Addr Score', '#212529', 'addr_score'],
+    ['Addr Score', '#212529', 'address_score'],
+    ['N+A', '#212529', 'nameaddrscore', false],
     ['Status', '#212529', 'recommendation'],
     ['Process', '#212529', 'how_to_process'],
     ['Canvas Name', '#1e3a8a', 'canvas_name'],
-    ['Canvas Addr', '#1e3a8a', 'canvas_addr'],
+    ['Canvas Addr', '#1e3a8a', 'canvas_address'],
     ['Canvas City/St/Zip', '#1e3a8a', 'canvas_csz'],
     ['Canvas ID', '#1e3a8a', 'canvas_id', false],
     ['DEC Name', '#9b4d6e', 'dec_name'],
-    ['DEC Addr', '#9b4d6e', 'dec_addr'],
+    ['DEC Addr', '#9b4d6e', 'dec_address'],
     ['DEC City/St/Zip', '#9b4d6e', 'dec_csz'],
-    ['DEC Code', '#9b4d6e', 'dec_code', false],
-    ['Address Lookup', '#9b4d6e', 'addr_lookup', false],
+    ['DEC Code', '#9b4d6e', 'dec_hdrcode', false],
+    ['Address Lookup', '#9b4d6e', 'dec_address_looked_up', false],
     ['JIB', '#212529', 'jib', false],
     ['Rev', '#212529', 'rev', false],
     ['Vendor', '#212529', 'vendor', false],
-    ['Memo', '#212529', 'memo']
+    ['Memo', '#212529', 'memo', false]
 ];
 
 function buildColVisDropdown() {
@@ -146,7 +144,7 @@ function buildColVisDropdown() {
     $('#colVisContainer').on('change', '.col-vis-check', function() {
         var colName = $(this).data('col-name');
         var visible = $(this).prop('checked');
-        table.column(colName + ':name').visible(visible);
+        gridApi.setColumnsVisible([colName], visible);
     });
 }
 
@@ -154,301 +152,517 @@ function toggleAllCols(show) {
     $('.col-vis-check').each(function() {
         $(this).prop('checked', show);
         var colName = $(this).data('col-name');
-        table.column(colName + ':name').visible(show);
+        gridApi.setColumnsVisible([colName], show);
     });
 }
 
+// ── External filter state ──
+function isExternalFilterPresent() {
+    if (activeRecFilter) return true;
+    if ($('#ssnFilter').val()) return true;
+    if ($('#minNameScore').val()) return true;
+    if ($('#maxNameScore').val()) return true;
+    if ($('#minAddrScore').val()) return true;
+    if ($('#maxAddrScore').val()) return true;
+    return false;
+}
+
+function doesExternalFilterPass(node) {
+    var data = node.data;
+
+    // Recommendation filter
+    if (activeRecFilter && data.recommendation !== activeRecFilter) return false;
+
+    // SSN filter
+    var ssn = $('#ssnFilter').val();
+    if (ssn === 'yes' && data.ssn_match !== 100) return false;
+    if (ssn === 'no' && data.ssn_match !== 0) return false;
+    if (ssn === 'partial' && (data.ssn_match <= 0 || data.ssn_match >= 100)) return false;
+
+    // Score filters
+    var minName = $('#minNameScore').val();
+    if (minName && (data.name_score === '' || Number(data.name_score) < Number(minName))) return false;
+    var maxName = $('#maxNameScore').val();
+    if (maxName && (data.name_score === '' || Number(data.name_score) > Number(maxName))) return false;
+    var minAddr = $('#minAddrScore').val();
+    if (minAddr && (data.address_score === '' || Number(data.address_score) < Number(minAddr))) return false;
+    var maxAddr = $('#maxAddrScore').val();
+    if (maxAddr && (data.address_score === '' || Number(data.address_score) > Number(maxAddr))) return false;
+
+    return true;
+}
+
+function onExternalFilterChanged() {
+    if (!gridApi) return;
+    gridApi.deselectAll();
+    selectedRows.clear();
+    updateSelectionInfo();
+    gridApi.onFilterChanged();
+    updateGridInfo();
+}
+
+function updateGridInfo() {
+    if (!gridApi) return;
+    var displayed = 0;
+    gridApi.forEachNodeAfterFilterAndSort(function() { displayed++; });
+    var total = allRowData.length;
+    $('#gridInfo').text('Showing ' + displayed.toLocaleString() + ' of ' + total.toLocaleString() + ' records');
+}
+
+// ── Cell renderers ──
+function ssnCellRenderer(params) {
+    if (params.value === 100) return '<span class="badge bg-success" style="font-size:0.6rem;line-height:16px;padding:0 4px;">Yes</span>';
+    return '<span class="badge bg-danger" style="font-size:0.6rem;line-height:16px;padding:0 4px;">No</span>';
+}
+
+function scoreCellRenderer(params) {
+    var val = params.value;
+    if (val === '' || val === null || val === undefined) return '<span class="badge bg-secondary" style="font-size:0.6rem;line-height:16px;padding:0 4px;">-</span>';
+    var cls = 'score-low';
+    if (val === 100) cls = 'score-perfect';
+    else if (val >= 90) cls = 'score-high';
+    else if (val >= 75) cls = 'score-medium';
+    return '<span class="score-badge ' + cls + '">' + val + '</span>';
+}
+
+function recCellRenderer(params) {
+    var val = params.value;
+    if (!val) return '';
+    var color = REC_COLORS[val] || '#6c757d';
+    return '<span class="badge" style="background-color:' + color + '; font-size:0.6rem; white-space:nowrap; line-height:18px; padding:0 4px;" title="' + val + '">' + val + '</span>';
+}
+
+function processValueGetter(params) {
+    var val = params.data.how_to_process || '';
+    if (!val) {
+        var rec = (params.data.recommendation || '').toUpperCase();
+        if (rec === 'NEW BA AND NEW ADDRESS') val = 'Add new BA and address';
+        else if (rec === 'EXISTING BA ADD NEW ADDRESS') val = 'Add address to existing BA';
+        else if (rec === 'EXISTING BA AND EXISTING ADDRESS') val = 'Merge BA and address';
+    }
+    return val;
+}
+
+function checkboxCellRenderer(params) {
+    var checked = params.value ? 'checked' : '';
+    return '<input type="checkbox" class="field-check" data-row-id="' + params.data._row_id + '" data-field="' + params.colDef.field + '" ' + checked + '>';
+}
+
+function addressLookupCellRenderer(params) {
+    var checked = (params.value === 1 || params.value === '1') ? 'checked' : '';
+    return '<input type="checkbox" ' + checked + ' disabled>';
+}
+
+function memoCellRenderer(params) {
+    var val = params.value || '';
+    var escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return '<span class="memo-text" data-row-id="' + params.data._row_id + '" style="font-size:0.75rem;cursor:pointer;" title="Click to edit">' + escaped + '</span>';
+}
+
+function actionsCellRenderer(params) {
+    var rid = params.data._row_id;
+    return '<button class="btn btn-sm btn-outline-primary py-0 px-1" onclick="editRecord(' + rid + ')" title="Edit"><i class="fas fa-edit"></i></button> ' +
+           '<button class="btn btn-sm btn-outline-success py-0 px-1" onclick="quickApprove(' + rid + ')" title="Approve"><i class="fas fa-check"></i></button>';
+}
+
+function canvasIdValueGetter(params) {
+    var d = params.data;
+    var seq = d.canvas_addrseq || '';
+    return seq ? (d.canvas_id || '') + '-' + seq : (d.canvas_id || '');
+}
+
+function canvasCszValueGetter(params) {
+    var d = params.data;
+    return (d.canvas_city || '') + ', ' + (d.canvas_state || '') + ' ' + (d.canvas_zip || '');
+}
+
+function decCszValueGetter(params) {
+    var d = params.data;
+    return (d.dec_city || '') + ', ' + (d.dec_state || '') + ' ' + (d.dec_zip || '');
+}
+
+function decCodeValueGetter(params) {
+    var d = params.data;
+    var code = d.dec_hdrcode || '';
+    var sub = d.dec_addrsubcode || '';
+    return sub ? code + '-' + sub : code;
+}
+
+// ── AG Grid init ──
+function initGrid() {
+    var columnDefs = [
+        { headerName: 'UID', field: 'id', colId: 'uid', width: 60, hide: true },
+        { headerName: 'SSN', field: 'ssn_match', colId: 'ssn_match', cellRenderer: ssnCellRenderer, width: 62 },
+        { headerName: 'Name', field: 'name_score', colId: 'name_score', cellRenderer: scoreCellRenderer, width: 80,
+          tooltipValueGetter: function(p) {
+              if (p.value !== '' && p.value !== null && p.value < 45) return 'This may be low because name may exist in address field';
+              return null;
+          }
+        },
+        { headerName: 'Addr', field: 'address_score', colId: 'address_score', cellRenderer: scoreCellRenderer, width: 76,
+          tooltipValueGetter: function(p) {
+              if (p.value !== '' && p.value !== null && p.value > 45 &&
+                  p.data.recommendation && p.data.recommendation.toUpperCase().indexOf('NEW ADDRESS') !== -1) {
+                  return 'May have status of new address since numbers in address may not match';
+              }
+              return null;
+          }
+        },
+        { headerName: 'N+A', field: 'nameaddrscore', colId: 'nameaddrscore', width: 66, hide: true,
+          cellRenderer: function(params) {
+            var rec = (params.data && params.data.recommendation || '').toUpperCase();
+            if (rec !== 'NEEDS REVIEW') return '<span class="badge bg-secondary" style="font-size:0.6rem;line-height:16px;padding:0 4px;" title="Not Scored - Only NEEDS REVIEW scored">NS</span>';
+            return scoreCellRenderer(params);
+          }
+        },
+        { headerName: 'Status', field: 'recommendation', colId: 'recommendation', cellRenderer: recCellRenderer, width: 220 },
+        { headerName: 'Process', field: 'how_to_process', colId: 'how_to_process', width: 160,
+          editable: true,
+          cellEditor: 'agSelectCellEditor',
+          cellEditorParams: { values: PROCESS_OPTS },
+          cellStyle: { fontSize: '0.75rem', cursor: 'pointer' },
+          valueGetter: processValueGetter,
+          valueSetter: function(params) {
+              params.data.how_to_process = params.newValue;
+              return true;
+          }
+        },
+        { headerName: 'Canvas Name', field: 'canvas_name', colId: 'canvas_name', minWidth: 140, flex: 1,
+          headerClass: 'ag-header-canvas', wrapText: false,
+          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
+        },
+        { headerName: 'Canvas Addr', field: 'canvas_address', colId: 'canvas_address', minWidth: 140, flex: 1,
+          headerClass: 'ag-header-canvas', wrapText: false,
+          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
+        },
+        { headerName: 'Canvas City/St/Zip', colId: 'canvas_csz', valueGetter: canvasCszValueGetter, width: 160,
+          headerClass: 'ag-header-canvas' },
+        { headerName: 'Canvas ID', field: 'canvas_id', colId: 'canvas_id', valueGetter: canvasIdValueGetter, width: 100,
+          headerClass: 'ag-header-canvas', hide: true },
+        { headerName: 'DEC Name', field: 'dec_name', colId: 'dec_name', minWidth: 140, flex: 1,
+          headerClass: 'ag-header-dec', wrapText: false,
+          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
+        },
+        { headerName: 'DEC Addr', field: 'dec_address', colId: 'dec_address', minWidth: 140, flex: 1,
+          headerClass: 'ag-header-dec', wrapText: false,
+          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
+        },
+        { headerName: 'DEC City/St/Zip', colId: 'dec_csz', valueGetter: decCszValueGetter, width: 160,
+          headerClass: 'ag-header-dec' },
+        { headerName: 'DEC Code', field: 'dec_hdrcode', colId: 'dec_hdrcode', valueGetter: decCodeValueGetter, width: 100,
+          headerClass: 'ag-header-dec', hide: true },
+        { headerName: 'Address Lookup', field: 'dec_address_looked_up', colId: 'dec_address_looked_up',
+          cellRenderer: addressLookupCellRenderer, width: 55, headerClass: 'ag-header-dec', hide: true },
+        { headerName: 'JIB', field: 'jib', colId: 'jib', cellRenderer: checkboxCellRenderer, width: 45, hide: true },
+        { headerName: 'Rev', field: 'rev', colId: 'rev', cellRenderer: checkboxCellRenderer, width: 45, hide: true },
+        { headerName: 'Vendor', field: 'vendor', colId: 'vendor', cellRenderer: checkboxCellRenderer, width: 55, hide: true },
+        { headerName: 'Memo', field: 'memo', colId: 'memo', cellRenderer: memoCellRenderer, width: 160, hide: true },
+        { headerName: 'Actions', colId: 'actions', cellRenderer: actionsCellRenderer, width: 80,
+          sortable: false, filter: false, hide: true, pinned: 'right' }
+    ];
+
+    var gridOptions = {
+        columnDefs: columnDefs,
+        rowData: [],
+        getRowId: function(params) { return String(params.data._row_id); },
+        defaultColDef: {
+            sortable: true,
+            resizable: true,
+            filter: false,
+            suppressMenu: true
+        },
+        rowSelection: {
+            mode: 'multiRow',
+            checkboxes: true,
+            headerCheckbox: true,
+            selectAll: 'currentPage',
+            enableClickSelection: false
+        },
+        selectionColumnDef: {
+            pinned: 'left',
+            width: 35,
+            suppressMovable: true
+        },
+        rowHeight: 24,
+        headerHeight: 26,
+        animateRows: false,
+        rowBuffer: 10,
+        pagination: false,
+        suppressCellFocus: false,
+        tooltipShowDelay: 300,
+        isExternalFilterPresent: isExternalFilterPresent,
+        doesExternalFilterPass: doesExternalFilterPass,
+        rowClassRules: {
+            'trust-highlight': function(params) {
+                var v = params.data.is_trust;
+                return v === 1 || v === true || v === '1' || v === 'true' || v === 'True';
+            }
+        },
+        singleClickEdit: true,
+        onCellValueChanged: function(params) {
+            if (params.colDef.field === 'how_to_process' && params.oldValue !== params.newValue && !window._bulkProcessUpdate) {
+                // Check if multiple Process cells are shift-selected
+                var selectedCells = $('.cell-selected[col-id="how_to_process"]');
+                if (selectedCells.length > 1) {
+                    var undoChanges = [];
+                    var chosen = params.newValue;
+                    window._bulkProcessUpdate = true;
+                    // Include the edited cell in undo
+                    undoChanges.push({ rowId: params.data._row_id, field: 'how_to_process', oldValue: params.oldValue || '', newValue: chosen });
+                    saveProcessValue(params.data._row_id, chosen);
+                    // Apply to other selected cells
+                    selectedCells.each(function() {
+                        var rowEl = $(this).closest('.ag-row');
+                        var rowId = rowEl.attr('row-id');
+                        var rowNode = gridApi.getRowNode(rowId);
+                        if (!rowNode || rowNode.data._row_id === params.data._row_id) return;
+                        var oldVal = rowNode.data.how_to_process || '';
+                        if (oldVal !== chosen) {
+                            undoChanges.push({ rowId: rowNode.data._row_id, field: 'how_to_process', oldValue: oldVal, newValue: chosen });
+                            rowNode.setDataValue('how_to_process', chosen);
+                            saveProcessValue(rowNode.data._row_id, chosen);
+                        }
+                    });
+                    window._bulkProcessUpdate = false;
+                    pushUndo({ type: 'single', changes: undoChanges });
+                } else {
+                    pushUndo({ type: 'single', changes: [{ rowId: params.data._row_id, field: 'how_to_process', oldValue: params.oldValue || '', newValue: params.newValue }] });
+                    saveProcessValue(params.data._row_id, params.newValue);
+                }
+            }
+        },
+        onGridReady: function(params) {
+            loadGridData();
+        },
+        onPaginationChanged: function() {
+            updateGridInfo();
+        },
+        onSelectionChanged: function() {
+            selectedRows.clear();
+            gridApi.getSelectedNodes().forEach(function(node) {
+                selectedRows.add(node.data._row_id);
+            });
+            updateSelectionInfo();
+        },
+        getRowClass: undefined
+    };
+
+    var gridDiv = document.getElementById('matchesGrid');
+    gridApi = agGrid.createGrid(gridDiv, gridOptions);
+}
+
+function loadGridData() {
+    fetch('/api/matches_all')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            allRowData = data;
+            gridApi.setGridOption('rowData', data);
+            updateGridInfo();
+        })
+        .catch(function(err) {
+            console.error('Failed to load data:', err);
+            showToast('Failed to load data', 'error');
+        });
+}
+
+function refreshGridData() {
+    fetch('/api/matches_all')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            allRowData = data;
+            gridApi.setGridOption('rowData', data);
+            updateGridInfo();
+        });
+}
+
+// ── Document ready ──
 $(document).ready(function() {
     editModal = new bootstrap.Modal(document.getElementById('editModal'));
-
-    // Load available data sources
-    loadDataSources();
-
-    // Handle data source switching
-    $('#datasourceSelector').on('change', function() {
-        const sourceId = $(this).val();
-        if (!sourceId) return;
-        const dsType = $(this).find(':selected').data('type');
-
-        if (dsType === 'excel') {
-            // Open native file picker, then switch with chosen path
-            $.get('/api/browse_excel', function(resp) {
-                if (resp.cancelled) {
-                    loadDataSources(); // reset dropdown
-                    return;
-                }
-                if (resp.error) {
-                    showToast(resp.error, 'error');
-                    loadDataSources();
-                    return;
-                }
-                switchDataSource(sourceId, resp.file_path);
-            }).fail(function() {
-                showToast('Could not open file browser', 'error');
-                loadDataSources();
-            });
-        } else {
-            switchDataSource(sourceId);
-        }
-    });
-
-    // Load recommendations for dropdowns, then init table
     $.get('/api/recommendations', function(recs) {
         recommendationValues = sortByRecOrder(recs.slice());
-
-        // Build multi-select checkbox dropdown for filter
         buildRecFilterDropdown(recommendationValues);
-
-        // Populate edit modal dropdown (sorted)
         recommendationValues.forEach(function(r) {
-            $('#editRecommendation').append(`<option value="${r}">${r}</option>`);
+            $('#editRecommendation').append('<option value="' + r + '">' + r + '</option>');
         });
-        $('#editRecommendation').append('<option value="APPROVED">APPROVED</option>');
-
-        initTable();
+        $('#editRecommendation').append('<option value="PROCESSED">PROCESSED</option>');
+        initGrid();
         loadStats();
     });
 
-    // Select all
-    $('#selectAll').on('change', function() {
-        const checked = $(this).prop('checked');
-        $('.row-select:visible').each(function() {
-            $(this).prop('checked', checked);
-            const id = $(this).data('row-id');
-            checked ? selectedRows.add(id) : selectedRows.delete(id);
-            $(this).closest('tr').toggleClass('row-selected', checked);
-        });
-        updateSelectionInfo();
-    });
-
-
-    // Auto-apply filters on dropdown change
+    // Filter dropdowns trigger external filter
     $('#ssnFilter, #minNameScore, #maxNameScore, #minAddrScore, #maxAddrScore').on('change', function() {
-        applyFilters();
+        onExternalFilterChanged();
     });
 
-    // Import type dropdown - open file picker on selection
+
+    // Quick filter (search)
+    var quickFilterTimer;
+    $('#quickFilterInput').on('input', function() {
+        var val = $(this).val();
+        clearTimeout(quickFilterTimer);
+        quickFilterTimer = setTimeout(function() {
+            gridApi.setGridOption('quickFilterText', val);
+            updateGridInfo();
+        }, 300);
+    });
+
+    // Import type dropdown
     $('#importType').on('change', function() {
-        if ($(this).val()) {
-            $('#importFile').val('');
-            $('#importFile').trigger('click');
-        }
+        if ($(this).val()) { $('#importFile').val(''); $('#importFile').trigger('click'); }
     });
 
-    // File selected - read Canvas IDs and import
+    // File import
     $('#importFile').on('change', function() {
-        const file = this.files[0];
-        const field = $('#importType').val();
+        var file = this.files[0];
+        var field = $('#importType').val();
         if (!file || !field) return;
-
-        const reader = new FileReader();
+        var reader = new FileReader();
         reader.onload = function(e) {
-            const text = e.target.result;
-            // Parse lines, split by comma/newline, trim, filter blanks
-            const ids = text.split(/[\r\n,]+/).map(s => s.trim()).filter(s => s && s !== '');
-            if (ids.length === 0) {
-                showToast('No Canvas IDs found in file', 'warning');
-                $('#importType').val('');
-                return;
-            }
-
+            var ids = e.target.result.split(/[\r\n,]+/).map(function(s) { return s.trim(); }).filter(function(s) { return s && s !== ''; });
+            if (ids.length === 0) { showToast('No Canvas IDs found in file', 'warning'); $('#importType').val(''); return; }
             $.ajax({
-                url: '/api/import_ids',
-                method: 'POST',
-                contentType: 'application/json',
+                url: '/api/import_ids', method: 'POST', contentType: 'application/json',
                 data: JSON.stringify({ field: field, canvas_ids: ids }),
                 success: function(data) {
                     showToast(data.message, 'success');
                     pendingCount = data.pending_count || 0;
                     updateSaveBtn();
-                    table.ajax.reload();
+                    refreshGridData();
                 },
-                error: function(xhr) {
-                    const msg = xhr.responseJSON ? xhr.responseJSON.error : 'Import failed';
-                    showToast(msg, 'error');
-                }
+                error: function(xhr) { showToast(xhr.responseJSON ? xhr.responseJSON.error : 'Import failed', 'error'); }
             });
             $('#importType').val('');
         };
         reader.readAsText(file);
     });
 
-    // Cell selection (click = single cell, Shift+click = column range with text selection)
-    let lastClickedCell = null;
-    $('#matchesTable').on('click', 'tbody td', function(e) {
-        if ($(e.target).is('input, button, i, a')) return;
-        const td = $(this);
-        const colIdx = td.index();
+    // Cell selection + inline editing via event delegation on grid div
+    var lastClickedCell = null;
+    $('#matchesGrid').on('click', '.ag-cell', function(e) {
+        if ($(e.target).is('input, button, i, a, select')) return;
+        var td = $(this);
+        var colId = td.attr('col-id');
 
         if (e.shiftKey && lastClickedCell) {
-            // Shift+click: select range in same column (or row if different column)
-            const rows = $('#matchesTable tbody tr:visible');
-            const startRow = rows.index(lastClickedCell.tr);
-            const endRow = rows.index(td.closest('tr'));
-            const lo = Math.min(startRow, endRow);
-            const hi = Math.max(startRow, endRow);
+            var rows = $('#matchesGrid .ag-row');
+            var startRow = rows.index(lastClickedCell.row);
+            var endRow = rows.index(td.closest('.ag-row'));
+            var lo = Math.min(startRow, endRow);
+            var hi = Math.max(startRow, endRow);
             $('.cell-selected').removeClass('cell-selected');
 
-            if (lastClickedCell.colIdx === colIdx) {
-                // Same column: select range of cells in that column
+            if (lastClickedCell.colId === colId) {
                 rows.slice(lo, hi + 1).each(function() {
-                    $(this).find('td').eq(colIdx).addClass('cell-selected');
+                    $(this).find('.ag-cell[col-id="' + colId + '"]').addClass('cell-selected');
                 });
-                // Clear native selection — Ctrl+C handler copies .cell-selected
                 window.getSelection().removeAllRanges();
             } else {
-                // Different column: select all cells in clicked row
-                td.closest('tr').find('td').addClass('cell-selected');
-                // Native select the row text
-                const sel = window.getSelection();
+                td.closest('.ag-row').find('.ag-cell').addClass('cell-selected');
+                var sel = window.getSelection();
                 sel.removeAllRanges();
-                const range = document.createRange();
-                range.selectNodeContents(td.closest('tr')[0]);
+                var range = document.createRange();
+                range.selectNodeContents(td.closest('.ag-row')[0]);
                 sel.addRange(range);
             }
         } else {
-            // Single click: select one cell
             $('.cell-selected').removeClass('cell-selected');
             td.addClass('cell-selected');
-            lastClickedCell = { colIdx: colIdx, tr: td.closest('tr')[0] };
+            lastClickedCell = { colId: colId, row: td.closest('.ag-row')[0] };
         }
     });
 
-    // Ctrl+C / Cmd+C: copy selected cell values
+    // Click outside grid clears cell selection
+    $(document).on('click', function(e) {
+        if (!$(e.target).closest('#matchesGrid .ag-body-viewport').length) {
+            $('.cell-selected').removeClass('cell-selected');
+        }
+    });
+
+    // Ctrl+C copy, Ctrl+Z undo, Ctrl+Y redo
     $(document).on('keydown', function(e) {
         if ((e.ctrlKey || e.metaKey) && e.key === 'c' && $('.cell-selected').length > 0) {
             var sel = window.getSelection();
-            if (sel && sel.toString().length > 0) {
-                return; // let browser copy the highlighted text
-            }
+            if (sel && sel.toString().length > 0) return;
             e.preventDefault();
-            const vals = $('.cell-selected').map(function() {
-                return $(this).text().trim();
-            }).get();
+            var vals = $('.cell-selected').map(function() { return $(this).text().trim(); }).get();
             navigator.clipboard.writeText(vals.join('\n'));
-            showToast(`Copied ${vals.length} value(s)`, 'success');
+            showToast('Copied ' + vals.length + ' value(s)', 'success');
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+            if ($(e.target).is('input, textarea, select')) return;
+            e.preventDefault();
+            performUndo();
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+            if ($(e.target).is('input, textarea, select')) return;
+            e.preventDefault();
+            performRedo();
         }
     });
 
-    // Click outside table clears cell selection
-    $(document).on('click', function(e) {
-        if (!$(e.target).closest('#matchesTable tbody').length) {
-            $('.cell-selected').removeClass('cell-selected');
-        }
-    });
-
-    // Row selection
-    $('#matchesTable tbody').on('change', '.row-select', function() {
-        const id = $(this).data('row-id');
-        const checked = $(this).prop('checked');
-        checked ? selectedRows.add(id) : selectedRows.delete(id);
-        $(this).closest('tr').toggleClass('row-selected', checked);
-        updateSelectionInfo();
-    });
-
-    // JIB/Rev/Vendor checkbox toggle — applies to all cell-selected rows if any
-    $('#matchesTable tbody').on('change', '.field-check', function() {
-        const field = $(this).data('field');
-        const value = $(this).prop('checked') ? 1 : 0;
-        const selectedCells = $('.cell-selected');
+    // JIB/Rev/Vendor checkbox toggle
+    $('#matchesGrid').on('change', '.field-check', function() {
+        var field = $(this).data('field');
+        var value = $(this).prop('checked') ? 1 : 0;
+        var selectedCells = $('.cell-selected');
 
         if (selectedCells.length > 1) {
-            // Apply to all rows that have a selected cell
-            const rowIds = [];
-            const seen = new Set();
+            var rowIds = [];
+            var undoChanges = [];
+            var seen = new Set();
             selectedCells.each(function() {
-                const tr = $(this).closest('tr');
-                const cb = tr.find(`.field-check[data-field="${field}"]`);
+                var row = $(this).closest('.ag-row');
+                var cb = row.find('.field-check[data-field="' + field + '"]');
                 if (cb.length) {
-                    const rid = cb.data('row-id');
+                    var rid = parseInt(cb.data('row-id'));
                     if (!seen.has(rid)) {
                         seen.add(rid);
                         rowIds.push(rid);
+                        var oldVal = cb.prop('checked') ? 1 : 0;
+                        undoChanges.push({ rowId: rid, field: field, oldValue: oldVal, newValue: value });
                         cb.prop('checked', !!value);
                     }
                 }
             });
-            // Send all updates
-            let completed = 0;
+            if (undoChanges.length > 0) pushUndo({ type: 'bulk', changes: undoChanges });
+            var completed = 0;
             rowIds.forEach(function(rid) {
                 $.ajax({
-                    url: '/api/update',
-                    method: 'POST',
-                    contentType: 'application/json',
+                    url: '/api/update', method: 'POST', contentType: 'application/json',
                     data: JSON.stringify({ row_id: rid, field: field, value: value }),
                     success: function(data) {
-                        pendingCount = data.pending_count || 0;
-                        updateSaveBtn();
-                        if (++completed === rowIds.length) {
-                            showToast(`Set ${field.toUpperCase()} on ${rowIds.length} rows`, 'success');
-                        }
+                        pendingCount = data.pending_count || 0; updateSaveBtn();
+                        if (++completed === rowIds.length) showToast('Set ' + field.toUpperCase() + ' on ' + rowIds.length + ' rows', 'success');
                     },
                     error: function() { showToast('Toggle failed', 'error'); }
                 });
             });
         } else {
-            // Single row update
-            const rowId = $(this).data('row-id');
+            var rowId = parseInt($(this).data('row-id'));
+            var oldVal = value ? 0 : 1;
+            pushUndo({ type: 'single', changes: [{ rowId: rowId, field: field, oldValue: oldVal, newValue: value }] });
             $.ajax({
-                url: '/api/update',
-                method: 'POST',
-                contentType: 'application/json',
+                url: '/api/update', method: 'POST', contentType: 'application/json',
                 data: JSON.stringify({ row_id: rowId, field: field, value: value }),
-                success: function(data) {
-                    pendingCount = data.pending_count || 0;
-                    updateSaveBtn();
-                },
+                success: function(data) { pendingCount = data.pending_count || 0; updateSaveBtn(); },
                 error: function() { showToast('Toggle failed', 'error'); }
             });
         }
     });
 
-    // Process: click text to open inline dropdown, save on change
-    var PROCESS_OPTS = ['Add new BA and address', 'Merge BA - add addr', 'Merge BA and address', 'Manual Review -DNP'];
-
+    // Process inline dropdown
     function saveProcessValue(rowId, value) {
         $.ajax({
-            url: '/api/update',
-            method: 'POST',
-            contentType: 'application/json',
+            url: '/api/update', method: 'POST', contentType: 'application/json',
             data: JSON.stringify({ row_id: rowId, field: 'how_to_process', value: value }),
-            success: function(data) {
-                pendingCount = data.pending_count || 0;
-                updateSaveBtn();
-            },
+            success: function(data) { pendingCount = data.pending_count || 0; updateSaveBtn(); },
             error: function() { showToast('Update failed', 'error'); }
         });
     }
 
-    $('#matchesTable tbody').on('click', '.process-text', function() {
-        var $span = $(this);
-        if ($span.data('editing')) return;
-        $span.data('editing', true);
-        var rowId = $span.data('row-id');
-        var curVal = $span.data('value');
-        var html = '<select class="form-select form-select-sm process-select" data-row-id="' + rowId + '" style="font-size:0.75rem;padding:1px 4px;">';
-        PROCESS_OPTS.forEach(function(o) {
-            html += '<option value="' + o + '"' + (o === curVal ? ' selected' : '') + '>' + o + '</option>';
-        });
-        html += '</select>';
-        var $sel = $(html);
-        $span.replaceWith($sel);
-        $sel.focus();
-        $sel.on('change', function() {
-            var newVal = $(this).val();
-            saveProcessValue(rowId, newVal);
-            var $newSpan = $('<span class="process-text" data-row-id="' + rowId + '" data-value="' + newVal + '" style="font-size:0.75rem;cursor:pointer;" title="Click to change">' + newVal + '</span>');
-            $(this).replaceWith($newSpan);
-        });
-        $sel.on('blur', function() {
-            var val = $(this).val();
-            var $newSpan = $('<span class="process-text" data-row-id="' + rowId + '" data-value="' + val + '" style="font-size:0.75rem;cursor:pointer;" title="Click to change">' + val + '</span>');
-            $(this).replaceWith($newSpan);
-        });
-    });
 
-    // Memo: click text to open inline input, save on blur/Enter
-    $('#matchesTable tbody').on('click', '.memo-text', function() {
+    // Memo inline edit
+    $('#matchesGrid').on('click', '.memo-text', function() {
         var $span = $(this);
         if ($span.data('editing')) return;
         $span.data('editing', true);
@@ -462,31 +676,32 @@ $(document).ready(function() {
             if (saved) return;
             saved = true;
             var newVal = $input.val();
+            if (newVal !== curVal) {
+                pushUndo({ type: 'single', changes: [{ rowId: rowId, field: 'memo', oldValue: curVal, newValue: newVal }] });
+            }
             $.ajax({
                 url: '/api/update', method: 'POST', contentType: 'application/json',
                 data: JSON.stringify({ row_id: rowId, field: 'memo', value: newVal }),
                 error: function() { showToast('Memo save failed', 'error'); }
             });
-            var escaped = newVal.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-            var $newSpan = $('<span class="memo-text" data-row-id="' + rowId + '" style="font-size:0.75rem;cursor:pointer;" title="Click to edit">' + escaped + '</span>');
-            $input.replaceWith($newSpan);
+            var rowNode = gridApi.getRowNode(String(rowId));
+            if (rowNode) rowNode.setDataValue('memo', newVal);
         }
         $input.on('blur', saveMemo);
         $input.on('keydown', function(e) {
             if (e.key === 'Enter') { e.preventDefault(); saveMemo(); }
             if (e.key === 'Escape') {
                 saved = true;
-                var escaped = curVal.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-                var $newSpan = $('<span class="memo-text" data-row-id="' + rowId + '" style="font-size:0.75rem;cursor:pointer;" title="Click to edit">' + escaped + '</span>');
-                $input.replaceWith($newSpan);
+                var rowNode = gridApi.getRowNode(String(rowId));
+                if (rowNode) gridApi.refreshCells({ rowNodes: [rowNode], columns: ['memo'], force: true });
             }
         });
     });
 
-    // Right-click on Process column header → set all visible rows to chosen option
-    $('#matchesTable').on('contextmenu', 'th', function(e) {
-        var colName = table ? table.column(this).dataSrc() : '';
-        if (colName !== 'how_to_process') return;
+    // Right-click on Process column header → set all visible rows
+    $('#matchesGrid').on('contextmenu', '.ag-header-cell', function(e) {
+        var colId = $(this).attr('col-id');
+        if (colId !== 'how_to_process') return;
         e.preventDefault();
         $('.process-ctx-menu').remove();
         var html = '<div class="process-ctx-menu" style="position:fixed;z-index:9999;background:#fff;border:1px solid #ccc;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.2);padding:4px 0;">';
@@ -504,420 +719,218 @@ $(document).ready(function() {
         $menu.find('.process-ctx-item').on('click', function() {
             var chosen = $(this).data('value');
             $menu.remove();
-            var spans = $('#matchesTable tbody .process-text');
             var count = 0;
-            spans.each(function() {
-                if ($(this).data('value') !== chosen) {
-                    $(this).data('value', chosen).text(chosen);
-                    saveProcessValue($(this).data('row-id'), chosen);
+            var undoChanges = [];
+            window._bulkProcessUpdate = true;
+            gridApi.forEachNodeAfterFilterAndSort(function(node) {
+                var oldVal = node.data.how_to_process || '';
+                if (oldVal !== chosen) {
+                    undoChanges.push({ rowId: node.data._row_id, field: 'how_to_process', oldValue: oldVal, newValue: chosen });
+                    node.setDataValue('how_to_process', chosen);
+                    saveProcessValue(node.data._row_id, chosen);
                     count++;
                 }
             });
+            window._bulkProcessUpdate = false;
+            if (undoChanges.length > 0) pushUndo({ type: 'bulk', changes: undoChanges });
             showToast('Updated ' + count + ' rows to "' + chosen + '"');
         });
         $(document).one('click', function() { $menu.remove(); });
     });
+
+    // Build column visibility dropdown
+    buildColVisDropdown();
 });
 
-function initTable() {
-    table = $('#matchesTable').DataTable({
-        processing: true,
-        serverSide: true,
-        autoWidth: false,
-        deferRender: true,
-        searchDelay: 400,
-        colReorder: {
-            fixedColumnsLeft: 1,
-            fixedColumnsRight: 1
-        },
-        ajax: {
-            url: '/api/matches',
-            data: function(d) {
-                d.recommendation = getSelectedRecs().join(',');
-                d.ssn_match = $('#ssnFilter').val();
-                var minName = $('#minNameScore').val();
-                if (minName) d.min_name_score = minName;
-                var maxName = $('#maxNameScore').val();
-                if (maxName) d.max_name_score = maxName;
-                var minAddr = $('#minAddrScore').val();
-                if (minAddr) d.min_addr_score = minAddr;
-                var maxAddr = $('#maxAddrScore').val();
-                if (maxAddr) d.max_addr_score = maxAddr;
-            }
-        },
-        columns: [
-            {   // 0: Checkbox
-                name: 'select', data: null, orderable: false, className: 'text-center', width: '30px',
-                render: function(data) {
-                    return `<input type="checkbox" class="row-select" data-row-id="${data._row_id}">`;
+// ── Undo / Redo ──
+function pushUndo(action) {
+    undoStack.push(action);
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+    redoStack.length = 0;
+    updateUndoRedoBtns();
+}
+
+function applyChanges(changes, direction, callback) {
+    var completed = 0;
+    var hasRecChange = false;
+    window._bulkProcessUpdate = true;
+    changes.forEach(function(ch) {
+        var val = direction === 'undo' ? ch.oldValue : ch.newValue;
+        if (ch.field === 'recommendation') hasRecChange = true;
+        $.ajax({
+            url: '/api/update', method: 'POST', contentType: 'application/json',
+            data: JSON.stringify({ row_id: ch.rowId, field: ch.field, value: val }),
+            success: function(data) {
+                pendingCount = data.pending_count || 0;
+                var rowNode = gridApi.getRowNode(String(ch.rowId));
+                if (rowNode) rowNode.setDataValue(ch.field, val);
+                if (++completed === changes.length) {
+                    window._bulkProcessUpdate = false;
+                    updateSaveBtn();
+                    if (hasRecChange) loadStats();
+                    if (callback) callback();
                 }
             },
-            { name: 'uid', data: 'id', visible: false, width: '60px' },                    // 1: UID (hidden by default)
-            { name: 'ssn', data: 'ssn_match', render: ssnBadge, className: 'resizable', width: '42px' },           // 2: SSN
-            { name: 'name_score', data: 'name_score', render: scoreBadge, className: 'resizable', width: '42px',
-              createdCell: function(td, cellData) {
-                  if (cellData !== '' && cellData !== null && cellData < 45) {
-                      $(td).attr('title', 'This may be low because name may exist in address field');
-                  }
-              }
-            },  // 2: Name
-            { name: 'addr_score', data: 'address_score', render: scoreBadge, className: 'resizable', width: '42px',
-              createdCell: function(td, cellData, rowData) {
-                  if (cellData !== '' && cellData !== null && cellData > 45 &&
-                      rowData.recommendation && rowData.recommendation.toUpperCase().indexOf('NEW ADDRESS') !== -1) {
-                      $(td).attr('title', 'May have status of new address since numbers in address may not match');
-                  }
-              }
-            }, // 3: Addr
-            { name: 'recommendation', data: 'recommendation', render: recBadge, className: 'rec-col resizable', width: '140px' }, // 4: Rec
-            {   // 5: Process
-                name: 'how_to_process', data: 'how_to_process', className: 'resizable', width: '100px',
-                render: function(data, type, row) {
-                    var val = data || '';
-                    if (!val) {
-                        var rec = (row.recommendation || '').toUpperCase();
-                        if (rec.indexOf('NEW BA') !== -1 || rec.indexOf('LIKELY BA MATCH') !== -1) val = 'Add new BA and address';
-                        else if (rec.indexOf('EXISTING BA - NEW ADDRESS') !== -1) val = 'Merge BA - add addr';
-                        else if (rec.indexOf('EXISTING BA') !== -1) val = 'Merge BA and address';
-                    }
-                    return '<span class="process-text" data-row-id="' + row._row_id + '" data-value="' + val + '" style="font-size:0.75rem;cursor:pointer;" title="Click to change">' + val + '</span>';
-                }
-            },
-            { name: 'canvas_name', data: 'canvas_name', className: 'resizable', width: '120px', createdCell: function(td, cellData) {
-                if (cellData && DO_NOT_USE_RE.test(cellData)) {
-                    $(td).addClass('do-not-use-cell');
-                }
-            }},  // 5: Canvas Name
-            { name: 'canvas_addr', data: 'canvas_address', className: 'resizable', width: '120px', createdCell: function(td, cellData) {
-                if (cellData && DO_NOT_USE_RE.test(cellData)) {
-                    $(td).addClass('do-not-use-cell');
-                }
-            }},  // 6: Canvas Addr
-            {   // 7: Canvas City/St/Zip
-                name: 'canvas_csz', data: 'canvas_city', className: 'resizable', width: '120px',
-                render: function(data, type, d) {
-                    return `${d.canvas_city || ''}, ${d.canvas_state || ''} ${d.canvas_zip || ''}`;
-                }
-            },
-            { name: 'canvas_id', data: 'canvas_id', className: 'resizable', visible: false, width: '95px',            // 8: Canvas ID
-              render: function(data, type, d) {
-                  var seq = d.canvas_addrseq || '';
-                  return seq ? data + '-' + seq : (data || '');
-              }
-            },
-            { name: 'dec_name', data: 'dec_name', className: 'resizable', width: '120px', createdCell: function(td, cellData) {
-                if (cellData && DO_NOT_USE_RE.test(cellData)) {
-                    $(td).addClass('do-not-use-cell');
-                }
-            }},  // 9: DEC Name
-            { name: 'dec_addr', data: 'dec_address', className: 'resizable', width: '120px', createdCell: function(td, cellData) {
-                if (cellData && DO_NOT_USE_RE.test(cellData)) {
-                    $(td).addClass('do-not-use-cell');
-                }
-            }},  // 10: DEC Addr
-            {   // 11: DEC City/St/Zip
-                name: 'dec_csz', data: 'dec_city', className: 'resizable', width: '120px',
-                render: function(data, type, d) {
-                    return `${d.dec_city || ''}, ${d.dec_state || ''} ${d.dec_zip || ''}`;
-                }
-            },
-            {   // 12: DEC Code
-                name: 'dec_code', data: 'dec_hdrcode', className: 'resizable', visible: false, width: '90px',
-                render: function(data, type, d) {
-                    var code = data || '';
-                    var sub = d.dec_addrsubcode || '';
-                    return sub ? code + '-' + sub : code;
-                }
-            },
-            {   // 14: Address Lookup
-                name: 'addr_lookup', data: 'dec_address_looked_up', className: 'text-center', width: '50px', visible: false,
-                render: function(data) {
-                    const checked = (data === 1 || data === '1') ? 'checked' : '';
-                    return `<input type="checkbox" ${checked} disabled>`;
-                }
-            },
-            {   // 15: JIB
-                name: 'jib', data: 'jib', className: 'text-center', visible: false, width: '35px',
-                render: function(data, type, row) {
-                    const checked = data ? 'checked' : '';
-                    return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="jib" ${checked}>`;
-                }
-            },
-            {   // 14: Rev
-                name: 'rev', data: 'rev', className: 'text-center', visible: false, width: '35px',
-                render: function(data, type, row) {
-                    const checked = data ? 'checked' : '';
-                    return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="rev" ${checked}>`;
-                }
-            },
-            {   // 15: Vendor
-                name: 'vendor', data: 'vendor', className: 'text-center', visible: false, width: '50px',
-                render: function(data, type, row) {
-                    const checked = data ? 'checked' : '';
-                    return `<input type="checkbox" class="field-check" data-row-id="${row._row_id}" data-field="vendor" ${checked}>`;
-                }
-            },
-            {   // Memo
-                name: 'memo', data: 'memo', className: 'resizable', width: '150px',
-                render: function(data, type, row) {
-                    var val = data || '';
-                    var escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-                    return '<span class="memo-text" data-row-id="' + row._row_id + '" style="font-size:0.75rem;cursor:pointer;" title="Click to edit">' + escaped + '</span>';
-                }
-            },
-            {   // Actions
-                name: 'actions', data: null, orderable: false, visible: false, width: '70px',
-                render: function(data) {
-                    return `<button class="btn btn-sm btn-outline-primary py-0 px-1" onclick="editRecord(${data._row_id})" title="Edit"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-outline-success py-0 px-1" onclick="quickApprove(${data._row_id})" title="Approve"><i class="fas fa-check"></i></button>`;
+            error: function() {
+                if (++completed === changes.length) {
+                    window._bulkProcessUpdate = false;
+                    updateSaveBtn();
+                    if (hasRecChange) loadStats();
+                    if (callback) callback();
                 }
             }
-        ],
-        pageLength: 100,
-        lengthMenu: [[100, 500, 1000, 5000, -1], [100, 500, '1,000', '5,000', 'All Records']],
-        order: [[2, 'desc']],
-        language: {
-            processing: '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>',
-            lengthMenu: 'Show _MENU_'
-        },
-        createdRow: function(row, data) {
-            // Trust highlight (runs per-row during render — no DOM re-scan)
-            const cn = (data.canvas_name || '').toLowerCase();
-            const ca = (data.canvas_address || '').toLowerCase();
-            const combined = cn + ' ' + ca;
-            if (combined.includes('trust') || combined.includes('trst') || combined.includes(' tr ')) {
-                $(row).addClass('trust-highlight');
-            }
-        },
-        drawCallback: function() {
-            $('.row-select').each(function() {
-                const id = $(this).data('row-id');
-                if (selectedRows.has(id)) {
-                    $(this).prop('checked', true);
-                    $(this).closest('tr').addClass('row-selected');
-                }
-            });
-        }
+        });
     });
-
-    // Move DataTables length and search controls into the header
-    $('#matchesTable_length').detach().appendTo('#dtLengthPlaceholder');
-    $('#matchesTable_filter').detach().appendTo('#dtSearchPlaceholder');
-
-    // Column visibility dropdown
-    buildColVisDropdown();
-
-    // Column resizing
-    enableColumnResize('#matchesTable');
 }
 
-function enableColumnResize(tableSelector) {
-    const $table = $(tableSelector);
-    $table.css('table-layout', 'fixed');
-
-    // Add resize handles to columns whose definition includes class 'resizable'
-    // Use DataTables API to get header nodes directly (avoids index mismatch with hidden columns)
-    $table.DataTable().columns().every(function() {
-        const col = this.settings()[0].aoColumns[this.index()];
-        if (col.sClass && col.sClass.indexOf('resizable') !== -1) {
-            $(this.header()).append('<div class="col-resize-handle"></div>');
-        }
+function performUndo() {
+    if (undoStack.length === 0) return;
+    var action = undoStack.pop();
+    applyChanges(action.changes, 'undo', function() {
+        redoStack.push(action);
+        updateUndoRedoBtns();
+        showToast('Undone (' + action.changes.length + ' change' + (action.changes.length > 1 ? 's' : '') + ')', 'info');
     });
-
-    // Drag logic
-    let dragging = false, startX, startW, $dragTh;
-    let resizeEndTime = 0;   // timestamp to suppress sort-click after resize
-
-    // Bind directly on each handle so it fires BEFORE ColReorder's th handler
-    $table.find('.col-resize-handle').on('mousedown', function(e) {
-        e.preventDefault();
-        e.stopPropagation();          // stop bubble to th (ColReorder)
-        e.stopImmediatePropagation(); // stop any other handlers on this element
-        dragging = true;
-        $table.DataTable().colReorder.disable();
-        $dragTh = $(this).closest('th');
-        startX = e.pageX;
-        startW = $dragTh.outerWidth();
-        $('body').addClass('col-resizing');
-    });
-
-    $(document).on('mousemove.colresize', function(e) {
-        if (!dragging) return;
-        const diff = e.pageX - startX;
-        const newW = Math.max(50, startW + diff);
-        $dragTh.css('width', newW + 'px');
-    });
-
-    $(document).on('mouseup.colresize', function() {
-        if (dragging) {
-            dragging = false;
-            $dragTh = null;
-            $('body').removeClass('col-resizing');
-            $table.DataTable().colReorder.enable();
-            resizeEndTime = Date.now();
-        }
-    });
-
-    // Capture-phase listener fires BEFORE DataTables' sort handler
-    $table[0].addEventListener('click', function(e) {
-        if (Date.now() - resizeEndTime < 300) {
-            e.stopImmediatePropagation();
-            e.preventDefault();
-        }
-    }, true);
 }
 
-function ssnBadge(val) {
-    if (val === 100) return '<span class="badge bg-success">Yes</span>';
-    return '<span class="badge bg-danger">No</span>';
+function performRedo() {
+    if (redoStack.length === 0) return;
+    var action = redoStack.pop();
+    applyChanges(action.changes, 'redo', function() {
+        undoStack.push(action);
+        updateUndoRedoBtns();
+        showToast('Redone (' + action.changes.length + ' change' + (action.changes.length > 1 ? 's' : '') + ')', 'info');
+    });
 }
 
-function scoreBadge(val) {
-    if (val === '' || val === null || val === undefined) return '<span class="badge bg-secondary">-</span>';
-    let cls = 'score-low';
-    if (val === 100) cls = 'score-perfect';
-    else if (val >= 90) cls = 'score-high';
-    else if (val >= 75) cls = 'score-medium';
-    return `<span class="score-badge ${cls}">${val}</span>`;
+function updateUndoRedoBtns() {
+    $('#undoBtn').prop('disabled', undoStack.length === 0);
+    $('#redoBtn').prop('disabled', redoStack.length === 0);
 }
 
-function recBadge(val) {
-    if (!val) return '';
-    const color = REC_COLORS[val] || '#6c757d';
-    return `<span class="badge" style="background-color:${color}; font-size:0.65rem; white-space:normal; line-height:1.2;" title="${val}">${val}</span>`;
-}
-
+// ── Stats cards ──
 function loadStats() {
     $.get('/api/stats', function(s) {
         $('#totalRecords').text(s.total_records.toLocaleString());
         $('#ssnPerfect').text(s.ssn_perfect_matches.toLocaleString());
         $('#ssnNone').text(s.ssn_no_match.toLocaleString());
 
-        // Recommendation breakdown row (sorted by preferred order)
-        let html = '';
-        const recs = sortByRecOrder(Object.entries(s.recommendations));
-        recs.forEach(function([rec, count]) {
-            const color = REC_COLORS[rec] || '#6c757d';
-            const pct = ((count / s.total_records) * 100).toFixed(1);
-            html += `<div class="col">
-                <div class="card rec-card" style="border-left: 4px solid ${color}; cursor:pointer;" onclick="filterByRec('${rec}')">
-                    <div class="card-body py-1 px-2">
-                        <div class="small text-truncate" title="${rec}">${rec}</div>
-                        <div class="fw-bold">${count.toLocaleString()} <span class="text-muted small">(${pct}%)</span></div>
-                    </div>
-                </div>
-            </div>`;
+        var html = '';
+        // "ALL" card to show all records
+        html += '<div class="col">' +
+            '<div class="card rec-card" style="border-left: 4px solid #212529; cursor:pointer;" onclick="clearFilters()">' +
+            '<div class="card-body py-1 px-2" style="line-height:1.4;">' +
+            '<div class="fw-bold text-truncate" style="font-size:0.82rem;" title="All Records">ALL - ' + s.total_records.toLocaleString() + '</div>' +
+            '</div></div></div>';
+        var recCfg = s.rec_config || {};
+        var recs = sortByRecOrder(Object.entries(s.recommendations));
+        recs.forEach(function(entry) {
+            var rec = entry[0], count = entry[1];
+            var color = REC_COLORS[rec] || '#6c757d';
+            var pct = ((count / s.total_records) * 100).toFixed(1);
+            var tip = rec;
+            var cfg = recCfg[rec];
+            if (cfg) {
+                tip += '&#10;Name Score: ' + cfg.min_name + ' - ' + cfg.max_name;
+                tip += '&#10;Addr Score: ' + cfg.min_addr + ' - ' + cfg.max_addr;
+            }
+            html += '<div class="col">' +
+                '<div class="card rec-card" style="border-left: 4px solid ' + color + '; cursor:pointer;" onclick="filterByRec(\'' + rec + '\')" title="' + tip + '">' +
+                '<div class="card-body py-1 px-2" style="line-height:1.4;">' +
+                '<div class="fw-bold text-truncate" style="font-size:0.82rem;">' + rec + ' - ' + count.toLocaleString() + ' <span class="text-muted fw-normal">(' + pct + '%)</span></div>' +
+                '</div></div></div>';
         });
         $('#recBreakdown').html(html);
     });
 }
 
 function filterByRec(rec) {
-    table.page.len(100).draw(false);
-    $('.rec-check').prop('checked', false);
-    $(`.rec-check[value="${rec}"]`).prop('checked', true);
-    updateRecFilterLabel();
+    activeRecFilter = rec;
     $('#ssnFilter').val('');
-    applyFilters();
+    onExternalFilterChanged();
 }
 
 function filterByStat(type) {
-    table.page.len(100).draw(false);
-    if (type === 'all') {
-        clearFilters();
-    } else if (type === 'ssn_yes') {
-        $('#ssnFilter').val('yes');
-        applyFilters();
-    } else if (type === 'ssn_partial') {
-        $('#ssnFilter').val('partial');
-        applyFilters();
-    } else if (type === 'ssn_no') {
-        $('#ssnFilter').val('no');
-        applyFilters();
-    }
+    if (type === 'all') { clearFilters(); }
+    else if (type === 'ssn_yes') { $('#ssnFilter').val('yes'); onExternalFilterChanged(); }
+    else if (type === 'ssn_partial') { $('#ssnFilter').val('partial'); onExternalFilterChanged(); }
+    else if (type === 'ssn_no') { $('#ssnFilter').val('no'); onExternalFilterChanged(); }
 }
 
 function applyFilters() {
-    selectedRows.clear();
-    $('#selectAll').prop('checked', false);
-    updateSelectionInfo();
-    table.ajax.reload();
+    onExternalFilterChanged();
 }
 
 function openDevNotes() {
     $.get('/api/dev_notes').fail(function(xhr) {
-        var msg = xhr.responseJSON ? xhr.responseJSON.error : 'Could not open Dev Notes';
-        showToast(msg, 'error');
+        showToast(xhr.responseJSON ? xhr.responseJSON.error : 'Could not open Dev Notes', 'error');
     });
 }
 
 function clearFilters() {
-    $('.rec-check').prop('checked', false);
-    updateRecFilterLabel();
+    activeRecFilter = '';
     $('#ssnFilter').val('');
     $('#minNameScore').val('');
     $('#maxNameScore').val('');
     $('#minAddrScore').val('');
     $('#maxAddrScore').val('');
-    applyFilters();
+    $('#quickFilterInput').val('');
+    if (gridApi) gridApi.setGridOption('quickFilterText', '');
+    onExternalFilterChanged();
 }
 
 function refreshData() {
-    showToast('Reloading from database...', 'info');
+    if (pendingCount > 0 && !confirm('You have unsaved changes. Refresh will discard them. Continue?')) return;
+    showToast('Reloading from Snowflake...', 'info');
     $.post('/api/reload', function(data) {
+        pendingCount = 0;
+        updateSaveBtn();
         loadStats();
-        table.ajax.reload();
+        refreshGridData();
         showToast(data.message, 'success');
     }).fail(function() {
-        // Fallback: just reload table from cache
         loadStats();
-        table.ajax.reload();
+        refreshGridData();
         showToast('Refreshed (from cache)', 'warning');
     });
 }
 
 function updateSelectionInfo() {
-    const n = selectedRows.size;
-    $('#selectionInfo').text(n === 0 ? 'No records selected' : `${n} record(s) selected`);
+    var n = selectedRows.size;
+    $('#selectionInfo').text(n === 0 ? 'No records selected' : n + ' record(s) selected');
     $('#bulkApproveBtn').prop('disabled', n === 0);
 }
 
+// ── Edit modal ──
 function editRecord(rowId) {
-    $.get(`/api/record/${rowId}`, function(d) {
+    $.get('/api/record/' + rowId, function(d) {
         $('#editRowId').val(d._row_id);
-
-        // Canvas side
-        $('#editCanvasName').text(d.canvas_name || '');
-        $('#editCanvasAddress').text(d.canvas_address || '');
-        $('#editCanvasCity').text(d.canvas_city || '');
-        $('#editCanvasState').text(d.canvas_state || '');
-        $('#editCanvasZip').text(d.canvas_zip || '');
+        $('#editCanvasName').val(d.canvas_name || '');
+        $('#editCanvasAddress').val(d.canvas_address || '');
+        $('#editCanvasCity').val(d.canvas_city || '');
+        $('#editCanvasState').val(d.canvas_state || '');
+        $('#editCanvasZip').val(d.canvas_zip || '');
         $('#editCanvasId').text(d.canvas_addrseq ? (d.canvas_id + '-' + d.canvas_addrseq) : (d.canvas_id || ''));
         $('#editCanvasSSN').text(d.canvas_ssn || '');
-
-        // DEC side
-        $('#editDecName').val(d.dec_name || '');
-        $('#editDecAddress').val(d.dec_address || '');
-        $('#editDecCity').val(d.dec_city || '');
-        $('#editDecState').val(d.dec_state || '');
-        $('#editDecZip').val(d.dec_zip || '');
-        $('#editDecContact').val(d.dec_contact || '');
-        $('#editDecHdrcode').val(d.dec_hdrcode || '');
-
-        // Scores
+        $('#editDecName').text(d.dec_name || '');
+        $('#editDecAddress').text(d.dec_address || '');
+        $('#editDecCity').text(d.dec_city || '');
+        $('#editDecState').text(d.dec_state || '');
+        $('#editDecZip').text(d.dec_zip || '');
+        $('#editDecContact').text(d.dec_contact || '');
+        $('#editDecHdrcode').text(d.dec_hdrcode || '');
         setScoreBadgeEl('#editSsnMatch', d.ssn_match);
         setScoreBadgeEl('#editNameScore', d.name_score);
         setScoreBadgeEl('#editAddressScore', d.address_score);
-
         $('#editRecommendation').val(d.recommendation || '');
         $('#editAddressReason').val(d.address_reason || '');
         $('#editMemo').val(d.memo || '');
-
         editModal.show();
     });
 }
 
 function setScoreBadgeEl(sel, val) {
-    const el = $(sel);
+    var el = $(sel);
     el.text(val != null ? val : '-');
     el.removeClass('score-perfect score-high score-medium score-low');
     if (val === 100) el.addClass('score-perfect');
@@ -927,43 +940,41 @@ function setScoreBadgeEl(sel, val) {
 }
 
 function saveRecord() {
-    const rowId = parseInt($('#editRowId').val());
-    const fields = {
-        'dec_name': $('#editDecName').val(),
-        'dec_address': $('#editDecAddress').val(),
-        'dec_city': $('#editDecCity').val(),
-        'dec_state': $('#editDecState').val(),
-        'dec_zip': $('#editDecZip').val(),
-        'dec_contact': $('#editDecContact').val(),
-        'dec_hdrcode': $('#editDecHdrcode').val(),
+    var rowId = parseInt($('#editRowId').val());
+    var fields = {
+        'canvas_name': $('#editCanvasName').val(),
+        'canvas_address': $('#editCanvasAddress').val(),
+        'canvas_city': $('#editCanvasCity').val(),
+        'canvas_state': $('#editCanvasState').val(),
+        'canvas_zip': $('#editCanvasZip').val(),
         'recommendation': $('#editRecommendation').val(),
         'address_reason': $('#editAddressReason').val(),
         'memo': $('#editMemo').val()
     };
 
-    let pending = Object.keys(fields).length;
-    let errors = [];
+    var pending = Object.keys(fields).length;
+    var errors = [];
 
-    Object.entries(fields).forEach(([field, value]) => {
+    Object.entries(fields).forEach(function(entry) {
+        var field = entry[0], value = entry[1];
         $.ajax({
-            url: '/api/update',
-            method: 'POST',
-            contentType: 'application/json',
+            url: '/api/update', method: 'POST', contentType: 'application/json',
             data: JSON.stringify({ row_id: rowId, field: field, value: value }),
-            success: function() { if (--pending === 0) onSaveDone(errors); },
-            error: function(xhr) {
-                errors.push(field);
+            success: function(data) {
+                pendingCount = data.pending_count || 0;
                 if (--pending === 0) onSaveDone(errors);
-            }
+            },
+            error: function() { errors.push(field); if (--pending === 0) onSaveDone(errors); }
         });
     });
 }
 
 function onSaveDone(errors) {
     if (errors.length === 0) {
-        showToast('Saved', 'success');
+        showToast('Changes saved to memory (click Save to persist)', 'success');
         editModal.hide();
-        table.ajax.reload(null, false);
+        updateSaveBtn();
+        refreshGridData();
         loadStats();
     } else {
         showToast('Errors saving: ' + errors.join(', '), 'error');
@@ -974,45 +985,52 @@ function showConfirm(title, message, onConfirm) {
     $('#confirmModalTitle').text(title);
     $('#confirmModalBody').html(message);
     var modal = new bootstrap.Modal(document.getElementById('confirmModal'));
-    $('#confirmModalOk').off('click').on('click', function() {
-        modal.hide();
-        onConfirm();
-    });
+    $('#confirmModalOk').off('click').on('click', function() { modal.hide(); onConfirm(); });
     modal.show();
 }
 
 function quickApprove(rowId) {
     showConfirm('Approve Record', '<i class="fas fa-check-circle text-success fa-2x mb-2"></i><br>Approve this record?', function() {
+        var rowNode = gridApi.getRowNode(String(rowId));
+        var oldVal = rowNode ? (rowNode.data.recommendation || '') : '';
+        pushUndo({ type: 'single', changes: [{ rowId: rowId, field: 'recommendation', oldValue: oldVal, newValue: 'APPROVED' }] });
         $.ajax({
-            url: '/api/update',
-            method: 'POST',
-            contentType: 'application/json',
+            url: '/api/update', method: 'POST', contentType: 'application/json',
             data: JSON.stringify({ row_id: rowId, field: 'recommendation', value: 'APPROVED' }),
-            success: function() {
-                showToast('Approved', 'success');
-                table.ajax.reload(null, false);
+            success: function(data) {
+                showToast('Approved (unsaved)', 'success');
+                pendingCount = data.pending_count || 0;
+                updateSaveBtn();
+                if (rowNode) rowNode.setDataValue('recommendation', 'APPROVED');
                 loadStats();
             },
-            error: function(xhr) { showToast('Failed', 'error'); }
+            error: function() { showToast('Failed', 'error'); }
         });
     });
 }
 
 function bulkApprove() {
-    const n = selectedRows.size;
+    var n = selectedRows.size;
     if (n === 0) return;
     showConfirm('Approve Selected', '<i class="fas fa-check-circle text-success fa-2x mb-2"></i><br>Approve <strong>' + n + '</strong> selected record' + (n > 1 ? 's' : '') + '?', function() {
+        var undoChanges = [];
+        selectedRows.forEach(function(rid) {
+            var node = gridApi.getRowNode(String(rid));
+            var oldVal = node ? (node.data.recommendation || '') : '';
+            undoChanges.push({ rowId: rid, field: 'recommendation', oldValue: oldVal, newValue: 'APPROVED' });
+        });
+        if (undoChanges.length > 0) pushUndo({ type: 'bulk', changes: undoChanges });
         $.ajax({
-            url: '/api/bulk_update',
-            method: 'POST',
-            contentType: 'application/json',
+            url: '/api/bulk_update', method: 'POST', contentType: 'application/json',
             data: JSON.stringify({ row_ids: Array.from(selectedRows), recommendation: 'APPROVED' }),
             success: function(data) {
-                showToast(`Approved ${data.updated} records`, 'success');
+                showToast('Approved ' + data.updated + ' records (unsaved)', 'success');
+                pendingCount = data.pending_count || 0;
+                updateSaveBtn();
+                gridApi.deselectAll();
                 selectedRows.clear();
-                $('#selectAll').prop('checked', false);
                 updateSelectionInfo();
-                table.ajax.reload();
+                refreshGridData();
                 loadStats();
             },
             error: function() { showToast('Bulk approve failed', 'error'); }
@@ -1020,195 +1038,286 @@ function bulkApprove() {
     });
 }
 
+// ── Export (client-side CSV via AG Grid) ──
 function exportSelected() {
     if (selectedRows.size === 0) {
         showToast('No records selected', 'warning');
         return;
     }
-    const ids = Array.from(selectedRows).join(',');
-    window.location.href = `/api/export_selected?row_ids=${ids}`;
+    var rowNodes = [];
+    selectedRows.forEach(function(rid) {
+        var node = gridApi.getRowNode(String(rid));
+        if (node) rowNodes.push(node);
+    });
+    gridApi.exportDataAsCsv({
+        onlySelected: false,
+        shouldRowBeSkipped: function(params) {
+            return !selectedRows.has(params.node.data._row_id);
+        },
+        fileName: 'selected_export_' + new Date().toISOString().slice(0, 10) + '.csv'
+    });
 }
 
 function exportData() {
-    const recs = getSelectedRecs();
-    let url = '/api/export';
-    if (recs.length > 0) url += `?recommendation=${encodeURIComponent(recs.join(','))}`;
-    window.location.href = url;
+    gridApi.exportDataAsCsv({
+        fileName: 'matches_export_' + new Date().toISOString().slice(0, 10) + '.csv'
+    });
 }
 
+// ── Save pending changes ──
 function saveChanges() {
-    if (pendingCount === 0) {
-        showToast('Nothing to save', 'info');
-        return;
-    }
-
+    if (pendingCount === 0) { showToast('Nothing to save', 'info'); return; }
+    var btn = $('#saveChangesBtn');
+    btn.prop('disabled', true);
     $.ajax({
-        url: '/api/save_changes',
-        method: 'POST',
-        contentType: 'application/json',
+        url: '/api/save_changes', method: 'POST', contentType: 'application/json',
         data: JSON.stringify({}),
         success: function(data) {
-            showToast(data.message, 'success');
-            pendingCount = 0;
+            pendingCount = data.pending_count || 0;
             updateSaveBtn();
+            refreshGridData();
+            loadStats();
+            showToast(data.message, 'success');
         },
         error: function(xhr) {
-            const msg = xhr.responseJSON ? xhr.responseJSON.error : 'Save failed';
-            showToast(msg, 'error');
+            showToast(xhr.responseJSON ? xhr.responseJSON.error : 'Save failed', 'error');
+            updateSaveBtn();
         }
     });
 }
 
 function updateSaveBtn() {
-    const btn = $('#saveChangesBtn');
+    var btn = $('#saveChangesBtn');
     btn.prop('disabled', pendingCount === 0);
-    btn.find('.save-count').text(pendingCount > 0 ? ` (${pendingCount})` : '');
+    btn.find('.save-count').text(pendingCount > 0 ? ' (' + pendingCount + ')' : '');
 }
 
-// Additional connection targets (no backend yet — placeholders for future use)
-const EXTRA_DATASOURCES = [
-    { id: 'mssql_cloud', name: 'MS SQL Server (Cloud)', type: 'mssql' },
-    { id: 'mssql_local', name: 'MS SQL Server (Local)', type: 'mssql' },
-    { id: 'oracle_cloud', name: 'Oracle (Cloud)', type: 'oracle' },
-    { id: 'oracle_local', name: 'Oracle (Local)', type: 'oracle' }
+// ── Toast ──
+function showToast(msg, type) {
+    var colors = { success: '#28a745', error: '#dc3545', warning: '#ffc107', info: '#17a2b8' };
+    var bg = colors[type] || colors.info;
+    var toast = $('<div class="toast-msg" style="background:' + bg + '">' + msg + '</div>');
+    $('body').append(toast);
+    setTimeout(function() { toast.fadeOut(300, function() { $(this).remove(); }); }, 2500);
+}
+
+// ── Search & Replace ──
+var srModal;
+var srMatches = [];   // [{rowId, rowNode, col, value}, ...]
+var srMatchIdx = -1;  // current match index
+
+var SR_TEXT_COLS = [
+    'canvas_name', 'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip',
+    'recommendation', 'how_to_process', 'memo', 'address_reason'
 ];
 
-function loadDataSources() {
-    $.get('/api/datasources', function(data) {
-        const allSources = data.datasources.concat(EXTRA_DATASOURCES);
-        const selectors = ['#datasourceSelector', '#targetDatasourceSelector'];
-        selectors.forEach(function(sel) {
-            const $sel = $(sel);
-            $sel.empty();
+var srHighlightInterval = null;
 
-            allSources.forEach(function(ds) {
-                const option = $('<option></option>')
-                    .val(ds.id)
-                    .text(ds.name)
-                    .data('type', ds.type);
+function srClearHighlight() {
+    $('.sr-highlight').removeClass('sr-highlight');
+    if (srHighlightInterval) { clearInterval(srHighlightInterval); srHighlightInterval = null; }
+}
 
-                if (ds.id === data.active) {
-                    option.prop('selected', true);
-                }
+function srKeepHighlight() {
+    // Re-apply highlight periodically (AG Grid virtualisation can remove classes on scroll)
+    srClearHighlight();
+    if (srMatchIdx < 0 || srMatchIdx >= srMatches.length) return;
+    var m = srMatches[srMatchIdx];
+    var search = $('#srSearch').val();
+    var caseSensitive = $('#srCaseSensitive').is(':checked');
+    function apply() {
+        var rowEl = document.querySelector('.ag-row[row-id="' + m.nodeId + '"]');
+        if (!rowEl) return;
+        var cell = rowEl.querySelector('.ag-cell[col-id="' + m.col + '"]');
+        if (!cell) return;
+        cell.classList.add('sr-highlight');
+        // Highlight the matched text within the cell
+        if (search && cell.querySelector('.sr-match-text') === null) {
+            var flags = caseSensitive ? 'g' : 'gi';
+            var re = new RegExp('(' + search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', flags);
+            var inner = cell.innerHTML;
+            if (!inner.includes('sr-match-text')) {
+                cell.innerHTML = inner.replace(re, '<span class="sr-match-text">$1</span>');
+            }
+        }
+    }
+    apply();
+    srHighlightInterval = setInterval(apply, 200);
+}
 
-                $sel.append(option);
-            });
+function openSearchReplace() {
+    if (!srModal) {
+        srModal = new bootstrap.Modal(document.getElementById('searchReplaceModal'));
+        var srFindTimer;
+        $('#srSearch, #srColumn, #srCaseSensitive').on('input change', function() {
+            clearTimeout(srFindTimer);
+            srMatches = []; srMatchIdx = -1;
+            srClearHighlight();
+            srFindTimer = setTimeout(srAutoFind, 300);
         });
-    }).fail(function() {
-        $('#datasourceSelector').html('<option value="">Error loading sources</option>');
-        $('#targetDatasourceSelector').html('<option value="">Error loading sources</option>');
+        // Clear highlight when modal closes
+        document.getElementById('searchReplaceModal').addEventListener('hidden.bs.modal', function() {
+            srClearHighlight();
+        });
+    }
+    $('#srMatchInfo').text('');
+    srMatches = []; srMatchIdx = -1;
+    srClearHighlight();
+    srModal.show();
+    setTimeout(srAutoFind, 100);
+}
+
+function getVisibleRowIds() {
+    var ids = [];
+    if (gridApi) {
+        gridApi.forEachNodeAfterFilterAndSort(function(node) {
+            if (node.data && node.data._row_id !== undefined) ids.push(node.data._row_id);
+        });
+    }
+    return ids;
+}
+
+function srBuildMatches() {
+    srMatches = [];
+    srMatchIdx = -1;
+    var search = $('#srSearch').val();
+    if (!search || !gridApi) return;
+    var col = $('#srColumn').val();
+    var caseSensitive = $('#srCaseSensitive').is(':checked');
+    var cols = (col === 'all') ? SR_TEXT_COLS : [col];
+    var searchVal = caseSensitive ? search : search.toLowerCase();
+
+    gridApi.forEachNodeAfterFilterAndSort(function(node) {
+        if (!node.data) return;
+        cols.forEach(function(c) {
+            var val = String(node.data[c] || '');
+            var cmp = caseSensitive ? val : val.toLowerCase();
+            if (cmp.indexOf(searchVal) !== -1) {
+                srMatches.push({ rowId: node.data._row_id, nodeId: node.id, col: c });
+            }
+        });
     });
 }
 
-function switchDataSource(sourceId, filePath) {
-    if (!confirm('Switch data source? This will reload all data.')) {
-        loadDataSources(); // Reset dropdown to current source
-        return;
+function srHighlightMatch() {
+    srClearHighlight();
+    if (srMatchIdx < 0 || srMatchIdx >= srMatches.length) return;
+    var m = srMatches[srMatchIdx];
+    var node = gridApi.getRowNode(m.nodeId);
+    if (!node) return;
+    // Ensure the column is visible
+    var colDef = gridApi.getColumnDef(m.col);
+    if (colDef && colDef.hide) {
+        gridApi.setColumnVisible(m.col, true);
     }
+    gridApi.ensureNodeVisible(node, 'middle');
+    // Start persistent highlight (survives AG Grid scroll re-renders)
+    setTimeout(function() { srKeepHighlight(); }, 100);
+}
 
-    showToast('Switching data source...', 'info');
+function srUpdateInfo() {
+    if (srMatches.length === 0) {
+        $('#srMatchInfo').text('No matches found in filtered rows.');
+    } else {
+        $('#srMatchInfo').text('Match ' + (srMatchIdx + 1) + ' of ' + srMatches.length);
+    }
+}
 
-    var payload = { source_id: sourceId };
-    if (filePath) payload.file_path = filePath;
+function srAutoFind() {
+    var search = $('#srSearch').val();
+    if (!search) { $('#srMatchInfo').text(''); srMatches = []; srMatchIdx = -1; return; }
+    srBuildMatches();
+    if (srMatches.length > 0) {
+        srMatchIdx = 0;
+        srHighlightMatch();
+    }
+    srUpdateInfo();
+}
 
+function srFindNext() {
+    var search = $('#srSearch').val();
+    if (!search) { $('#srMatchInfo').text('Enter search text.'); return; }
+    if (srMatches.length === 0) { srBuildMatches(); }
+    if (srMatches.length === 0) { srUpdateInfo(); return; }
+    srMatchIdx = (srMatchIdx + 1) % srMatches.length;
+    srHighlightMatch();
+    srUpdateInfo();
+}
+
+function srReplaceCurrent() {
+    var search = $('#srSearch').val();
+    var replace = $('#srReplace').val();
+    if (!search) { $('#srMatchInfo').text('Enter search text.'); return; }
+    if (srMatches.length === 0 || srMatchIdx < 0) { srFindNext(); return; }
+
+    var m = srMatches[srMatchIdx];
     $.ajax({
-        url: '/api/switch_datasource',
-        method: 'POST',
-        contentType: 'application/json',
-        data: JSON.stringify(payload),
+        url: '/api/search_replace', method: 'POST', contentType: 'application/json',
+        data: JSON.stringify({
+            search: search, replace: replace,
+            column: m.col,
+            case_sensitive: $('#srCaseSensitive').is(':checked'),
+            mode: 'replace',
+            row_ids: [m.rowId]
+        }),
         success: function(data) {
-            showToast(data.message + ` (${data.records.toLocaleString()} records)`, 'success');
-
-            // Reload page to refresh all data
-            setTimeout(function() {
-                location.reload();
-            }, 1000);
+            if (data.replaced > 0) {
+                pendingCount = data.pending_count || 0;
+                updateSaveBtn();
+                // Refresh just this row from server
+                refreshGridData();
+                loadStats();
+                // Rebuild matches and advance
+                setTimeout(function() {
+                    srBuildMatches();
+                    if (srMatches.length === 0) {
+                        srMatchIdx = -1;
+                        srUpdateInfo();
+                    } else {
+                        if (srMatchIdx >= srMatches.length) srMatchIdx = 0;
+                        srHighlightMatch();
+                        srUpdateInfo();
+                    }
+                }, 300);
+            } else {
+                $('#srMatchInfo').text('No replacement made.');
+            }
         },
         error: function(xhr) {
-            const msg = xhr.responseJSON ? xhr.responseJSON.error : 'Failed to switch data source';
-            showToast(msg, 'error');
-            loadDataSources(); // Reset dropdown to current source
+            showToast('Replace failed: ' + (xhr.responseJSON ? xhr.responseJSON.error : 'Unknown error'), 'error');
         }
     });
 }
 
-function showToast(msg, type) {
-    const colors = { success: '#28a745', error: '#dc3545', warning: '#ffc107', info: '#17a2b8' };
-    const bg = colors[type] || colors.info;
-    const toast = $(`<div class="toast-msg" style="background:${bg}">${msg}</div>`);
-    $('body').append(toast);
-    setTimeout(() => toast.fadeOut(300, function() { $(this).remove(); }), 2500);
+function doReplaceAll() {
+    var search = $('#srSearch').val();
+    var replace = $('#srReplace').val();
+    if (!search) { $('#srMatchInfo').text('Enter search text.'); return; }
+    $.ajax({
+        url: '/api/search_replace', method: 'POST', contentType: 'application/json',
+        data: JSON.stringify({
+            search: search, replace: replace,
+            column: $('#srColumn').val(),
+            case_sensitive: $('#srCaseSensitive').is(':checked'),
+            mode: 'replace',
+            row_ids: getVisibleRowIds()
+        }),
+        success: function(data) {
+            if (data.replaced === 0) {
+                $('#srMatchInfo').text('No matches to replace.');
+            } else {
+                showToast('Replaced ' + data.replaced + ' occurrence' + (data.replaced !== 1 ? 's' : '') + ' in ' + data.rows + ' row' + (data.rows !== 1 ? 's' : '') + ' (unsaved)', 'success');
+                pendingCount = data.pending_count || 0;
+                updateSaveBtn();
+                refreshGridData();
+                loadStats();
+                srMatches = []; srMatchIdx = -1;
+                srClearHighlight();
+                srModal.hide();
+            }
+        },
+        error: function(xhr) {
+            showToast('Replace failed: ' + (xhr.responseJSON ? xhr.responseJSON.error : 'Unknown error'), 'error');
+        }
+    });
 }
-
-// Toast styles and trust highlight
-$('<style>').text(`
-    .toast-msg {
-        position: fixed; top: 70px; right: 20px; z-index: 10000;
-        color: white; padding: 10px 20px; border-radius: 4px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3); font-size: 0.9rem;
-        animation: slideIn 0.3s ease-out;
-    }
-    @keyframes slideIn {
-        from { transform: translateX(300px); opacity: 0; }
-        to { transform: translateX(0); opacity: 1; }
-    }
-    #matchesTable tbody tr.trust-highlight,
-    #matchesTable tbody tr.trust-highlight td {
-        background-color: #ffe0b2 !important;
-    }
-    #matchesTable tbody tr.trust-highlight:hover,
-    #matchesTable tbody tr.trust-highlight:hover td {
-        background-color: #ffcc80 !important;
-    }
-    #matchesTable tbody td.do-not-use-cell {
-        background-color: #f8d7da !important;
-    }
-    .rec-multi-dropdown .dropdown-toggle {
-        font-size: 0.8rem;
-        max-width: 100%;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-    .rec-filter-menu {
-        max-height: 320px;
-        overflow-y: auto;
-        min-width: 380px;
-        font-size: 0.8rem;
-    }
-    .rec-filter-item {
-        padding: 0.15rem 0.6rem;
-        cursor: pointer;
-    }
-    .rec-filter-item:active {
-        background-color: inherit;
-        color: inherit;
-    }
-    .col-vis-menu {
-        max-height: 400px;
-        overflow-y: auto;
-        min-width: 200px;
-        font-size: 0.8rem;
-    }
-    .col-vis-item {
-        padding: 0.15rem 0.6rem;
-        cursor: pointer;
-    }
-    .col-vis-item:active {
-        background-color: inherit;
-        color: inherit;
-    }
-    .dataTables_processing {
-        position: fixed !important;
-        top: 50% !important;
-        left: 50% !important;
-        transform: translate(-50%, -50%) !important;
-        z-index: 1000;
-        background: rgba(255,255,255,0.95) !important;
-        padding: 20px 40px !important;
-        border-radius: 8px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.25);
-        width: auto !important;
-        margin: 0 !important;
-    }
-`).appendTo('head');

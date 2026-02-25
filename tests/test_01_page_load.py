@@ -1,9 +1,9 @@
-"""Tests for initial page load and DataTable initialization."""
+"""Tests for initial page load and AG Grid initialization."""
 import re
 import pytest
 from playwright.sync_api import Page, expect
 from helpers.selectors import *
-from helpers.wait_helpers import get_dt_records_filtered
+from helpers.wait_helpers import get_grid_info_counts
 from helpers.api_helpers import api_get_stats
 
 
@@ -23,8 +23,8 @@ class TestPageLoad:
         expect(app_page.locator(NAVBAR)).to_contain_text("BA/Address Import")
 
     @pytest.mark.smoke
-    def test_datatable_renders_with_data(self, app_page: Page):
-        rows = app_page.locator(TABLE_ROWS)
+    def test_grid_renders_with_data(self, app_page: Page):
+        rows = app_page.locator(GRID_ROW)
         expect(rows.first).to_be_visible()
         assert rows.count() > 0
 
@@ -38,7 +38,6 @@ class TestPageLoad:
         cards = app_page.locator(REC_CARD)
         for i in range(cards.count()):
             card_text = cards.nth(i).text_content()
-            # Extract the number from the card
             nums = re.findall(r'[\d,]+', card_text)
             if nums:
                 total_from_cards += int(nums[0].replace(',', ''))
@@ -57,6 +56,10 @@ class TestPageLoad:
         options = app_page.locator(f"{DATASOURCE_SELECTOR} option")
         assert options.count() >= 2
 
-    def test_default_page_length_is_100(self, app_page: Page):
-        rows = app_page.locator(TABLE_ROWS)
-        assert rows.count() == 100
+    def test_default_page_size_is_100(self, app_page: Page):
+        selected = app_page.locator(PAGE_SIZE_SELECT).input_value()
+        assert selected == "100"
+
+    def test_grid_info_shows_record_count(self, app_page: Page):
+        displayed, total = get_grid_info_counts(app_page)
+        assert total > 0
