@@ -3,6 +3,7 @@ Data Source Abstraction Layer
 Supports loading data from Snowflake (primary) and Excel/CSV (for imports)
 """
 import os
+import time
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
@@ -11,6 +12,8 @@ from typing import Dict, Any, Optional, List, Tuple
 # Persistent Snowflake connection — avoids repeated SSO browser popups
 _sf_conn = None
 _sf_config_hash = None
+_sf_conn_verified_at = 0  # timestamp of last successful health check
+_SF_CONN_TTL = 60         # seconds to trust a connection without re-checking
 
 
 def _build_conn_params(config: Dict[str, Any]) -> dict:
@@ -44,8 +47,9 @@ def get_snowflake_connection(config: Dict[str, Any]):
     """
     Get a persistent Snowflake connection, creating one only if needed.
     Reuses the same connection across all operations to avoid repeated SSO prompts.
+    Skips the SELECT 1 health check if the connection was verified within _SF_CONN_TTL seconds.
     """
-    global _sf_conn, _sf_config_hash
+    global _sf_conn, _sf_config_hash, _sf_conn_verified_at
 
     try:
         from snowflake import connector
@@ -58,10 +62,15 @@ def get_snowflake_connection(config: Dict[str, Any]):
     conn_params = _build_conn_params(config)
     config_hash = str(sorted(conn_params.items()))
 
-    # Reuse existing connection if alive and same config
+    # Reuse existing connection if same config
     if _sf_conn is not None and _sf_config_hash == config_hash:
+        # Skip health check if recently verified
+        if (time.time() - _sf_conn_verified_at) < _SF_CONN_TTL:
+            return _sf_conn
+        # Otherwise verify with SELECT 1
         try:
             _sf_conn.cursor().execute("SELECT 1")
+            _sf_conn_verified_at = time.time()
             return _sf_conn
         except Exception:
             # Connection is dead — reconnect
@@ -73,6 +82,7 @@ def get_snowflake_connection(config: Dict[str, Any]):
 
     _sf_conn = connector.connect(**conn_params)
     _sf_config_hash = config_hash
+    _sf_conn_verified_at = time.time()
     return _sf_conn
 
 
@@ -221,15 +231,17 @@ def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
 def merge_changes_to_snowflake(
     config: Dict[str, Any],
     pending_changes: Dict[int, Dict[str, Any]],
-    df: pd.DataFrame
+    df: pd.DataFrame,
+    cursor=None
 ) -> int:
     """
-    Persist pending changes to Snowflake via MERGE.
+    Persist pending changes to Snowflake via a single MERGE statement.
 
     Args:
         config: Snowflake connection config
         pending_changes: {row_id: {field: (old_value, new_value), ...}, ...}
         df: Current in-memory DataFrame (to look up canvas_id/canvas_ssn)
+        cursor: Optional shared cursor (caller manages commit)
 
     Returns:
         Number of rows affected
@@ -245,47 +257,54 @@ def merge_changes_to_snowflake(
         all_fields.update(fields.keys())
     all_fields = sorted(all_fields)
 
-    # Build value rows: (canvas_id, canvas_ssn, field1_val, field2_val, ...)
-    rows_data = []
+    # Build value rows and flat params for a single MERGE
+    placeholders = []
+    params: list = []
     for row_id, fields in pending_changes.items():
         cid = str(df.at[row_id, 'canvas_id'])
         ssn = str(df.at[row_id, 'canvas_ssn'])
-        row = [cid, ssn]
+        row_ph = ['%s', '%s']
+        params.extend([cid, ssn])
         for f in all_fields:
             entry = fields.get(f)
-            # Extract new_value from (old_value, new_value) tuple
             if isinstance(entry, tuple):
-                row.append(entry[1])
+                params.append(entry[1])
             elif entry is not None:
-                row.append(entry)
+                params.append(entry)
             else:
-                row.append(None)
-        rows_data.append(tuple(row))
+                params.append(None)
+            row_ph.append('%s')
+        placeholders.append('(' + ', '.join(row_ph) + ')')
 
-    conn = get_snowflake_connection(config)
-    cursor = conn.cursor()
+    own_cursor = cursor is None
+    if own_cursor:
+        conn = get_snowflake_connection(config)
+        cursor = conn.cursor()
 
-    # Build parameterized UPDATE and execute as batch
-    set_clause = ', '.join(f'{f.upper()} = %s' for f in all_fields)
-    sql = f"UPDATE {table} SET {set_clause} WHERE CANVAS_ID = %s AND CANVAS_SSN = %s"
+    # Single MERGE: all rows in one statement
+    src_cols = ['CID', 'SSN'] + [f.upper() for f in all_fields]
+    values_block = ', '.join(placeholders)
+    set_clause = ', '.join(f't.{f.upper()} = s.{f.upper()}' for f in all_fields)
 
-    # Reorder each row: (field_values..., cid, ssn) to match SET ... WHERE CANVAS_ID = %s AND CANVAS_SSN = %s
-    params_list = []
-    for row_data in rows_data:
-        cid, ssn = row_data[0], row_data[1]
-        field_values = list(row_data[2:])
-        params_list.append(field_values + [cid, ssn])
+    sql = (
+        f"MERGE INTO {table} t USING ("
+        f"SELECT {', '.join('column' + str(i+1) + ' AS ' + c for i, c in enumerate(src_cols))} "
+        f"FROM VALUES {values_block}"
+        f") s ON t.CANVAS_ID = s.CID AND t.CANVAS_SSN = s.SSN "
+        f"WHEN MATCHED THEN UPDATE SET {set_clause}"
+    )
 
-    cursor.executemany(sql, params_list)
+    cursor.execute(sql, params)
     affected = cursor.rowcount
-    conn.commit()
+    if own_cursor:
+        conn.commit()
     return affected
-
 
 
 def write_audit_log_to_snowflake(
     config: Dict[str, Any],
-    log_entries: List[Tuple]
+    log_entries: List[Tuple],
+    cursor=None
 ) -> None:
     """
     Batch-insert audit log entries to Snowflake UPDATE_LOG table.
@@ -293,18 +312,22 @@ def write_audit_log_to_snowflake(
     Args:
         config: Snowflake connection config
         log_entries: List of (canvas_id, canvas_ssn, field_name, old_value, new_value, updated_at)
+        cursor: Optional shared cursor (caller manages commit)
     """
     if not log_entries:
         return
 
-    conn = get_snowflake_connection(config)
-    cursor = conn.cursor()
+    own_cursor = cursor is None
+    if own_cursor:
+        conn = get_snowflake_connection(config)
+        cursor = conn.cursor()
     cursor.executemany(
         """INSERT INTO UPDATE_LOG (CANVAS_ID, CANVAS_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE, UPDATED_AT)
            VALUES (%s, %s, %s, %s, %s, %s)""",
         log_entries
     )
-    conn.commit()
+    if own_cursor:
+        conn.commit()
 
 
 def read_audit_log_from_snowflake(config: Dict[str, Any], limit: int = 100) -> list:

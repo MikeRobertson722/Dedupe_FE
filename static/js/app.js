@@ -5,6 +5,7 @@ let recommendationValues = [];
 let pendingCount = 0;
 let allRowData = [];
 let activeRecFilter = '';
+let recConfig = {};
 
 // Undo/Redo stacks
 var undoStack = [];
@@ -115,7 +116,8 @@ const COL_DEFS = [
     ['JIB', '#212529', 'jib', false],
     ['Rev', '#212529', 'rev', false],
     ['Vendor', '#212529', 'vendor', false],
-    ['Memo', '#212529', 'memo', false]
+    ['Memo', '#212529', 'memo', false],
+    ['Run ID', '#212529', 'run_id', false]
 ];
 
 function buildColVisDropdown() {
@@ -357,6 +359,7 @@ function initGrid() {
         { headerName: 'Rev', field: 'rev', colId: 'rev', cellRenderer: checkboxCellRenderer, width: 45, hide: true },
         { headerName: 'Vendor', field: 'vendor', colId: 'vendor', cellRenderer: checkboxCellRenderer, width: 55, hide: true },
         { headerName: 'Memo', field: 'memo', colId: 'memo', cellRenderer: memoCellRenderer, width: 160, hide: true },
+        { headerName: 'Run ID', field: 'run_id', colId: 'run_id', width: 120, hide: true },
         { headerName: 'Actions', colId: 'actions', cellRenderer: actionsCellRenderer, width: 80,
           sortable: false, filter: false, hide: true, pinned: 'right' }
     ];
@@ -822,7 +825,8 @@ function loadStats() {
             '<div class="card-body py-1 px-2" style="line-height:1.4;">' +
             '<div class="fw-bold text-truncate" style="font-size:0.82rem;" title="All Records">ALL - ' + s.total_records.toLocaleString() + '</div>' +
             '</div></div></div>';
-        var recCfg = s.rec_config || {};
+        recConfig = s.rec_config || {};
+        var recCfg = recConfig;
         var recs = sortByRecOrder(Object.entries(s.recommendations));
         recs.forEach(function(entry) {
             var rec = entry[0], count = entry[1];
@@ -847,6 +851,18 @@ function loadStats() {
 function filterByRec(rec) {
     activeRecFilter = rec;
     $('#ssnFilter').val('');
+    var cfg = recConfig[rec];
+    if (cfg) {
+        $('#minNameScore').val(cfg.min_name || '');
+        $('#maxNameScore').val(cfg.max_name || '');
+        $('#minAddrScore').val(cfg.min_addr || '');
+        $('#maxAddrScore').val(cfg.max_addr || '');
+    } else {
+        $('#minNameScore').val('');
+        $('#maxNameScore').val('');
+        $('#minAddrScore').val('');
+        $('#maxAddrScore').val('');
+    }
     onExternalFilterChanged();
 }
 

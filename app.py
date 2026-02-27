@@ -217,7 +217,7 @@ def get_matches():
             'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip', 'canvas_ssn',
             'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
             'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
-            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust'
+            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id'
         ]
         available = [c for c in needed_cols if c in df_page.columns]
         df_out = df_page[available].fillna('')
@@ -398,7 +398,7 @@ def get_matches_all():
             'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip', 'canvas_ssn',
             'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
             'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
-            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust'
+            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id'
         ]
         available = [c for c in needed_cols if c in df.columns]
         df_out = df[available].fillna('').copy()
@@ -611,11 +611,12 @@ def save_changes():
                     old_val, new_val = '', change
                 log_entries.append((cid, ssn, field, str(old_val), str(new_val), now))
 
-        # Write changes to Snowflake via MERGE
-        affected = merge_changes_to_snowflake(DATA_CONFIG, _pending_changes, df)
-
-        # Write audit log to Snowflake
-        write_audit_log_to_snowflake(DATA_CONFIG, log_entries)
+        # Single connection + single commit for both operations
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        affected = merge_changes_to_snowflake(DATA_CONFIG, _pending_changes, df, cursor=cursor)
+        write_audit_log_to_snowflake(DATA_CONFIG, log_entries, cursor=cursor)
+        conn.commit()
 
         saved_count = len(_pending_changes)
         _pending_changes = {}
