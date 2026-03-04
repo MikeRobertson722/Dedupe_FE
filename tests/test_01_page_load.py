@@ -16,7 +16,7 @@ class TestPageLoad:
 
     @pytest.mark.smoke
     def test_page_title(self, app_page: Page):
-        expect(app_page).to_have_title("BA/Address Import - (Canvas - Enertia)")
+        expect(app_page).to_have_title("BA/Address Import -  Source: Canvas (Enertia) -> Target: DEC (Enertia)")
 
     def test_navbar_present(self, app_page: Page):
         expect(app_page.locator(NAVBAR)).to_be_visible()

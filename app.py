@@ -217,7 +217,8 @@ def get_matches():
             'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip', 'canvas_ssn',
             'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
             'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
-            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id'
+            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id',
+            'name_normal_detail', 'address_normal_detail', 'name_match_detail', 'addr_match_detail'
         ]
         available = [c for c in needed_cols if c in df_page.columns]
         df_out = df_page[available].fillna('')
@@ -398,7 +399,8 @@ def get_matches_all():
             'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip', 'canvas_ssn',
             'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
             'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
-            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id'
+            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id',
+            'name_normal_detail', 'address_normal_detail', 'name_match_detail', 'addr_match_detail'
         ]
         available = [c for c in needed_cols if c in df.columns]
         df_out = df[available].fillna('').copy()

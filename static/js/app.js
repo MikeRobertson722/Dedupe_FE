@@ -117,7 +117,11 @@ const COL_DEFS = [
     ['Rev', '#212529', 'rev', false],
     ['Vendor', '#212529', 'vendor', false],
     ['Memo', '#212529', 'memo', false],
-    ['Run ID', '#212529', 'run_id', false]
+    ['Run ID', '#212529', 'run_id', false],
+    ['Name Normal', '#2e7d32', 'name_normal_detail', false],
+    ['Addr Normal', '#2e7d32', 'address_normal_detail', false],
+    ['Name Match', '#2e7d32', 'name_match_detail', false],
+    ['Addr Match', '#2e7d32', 'addr_match_detail', false]
 ];
 
 function buildColVisDropdown() {
@@ -360,6 +364,10 @@ function initGrid() {
         { headerName: 'Vendor', field: 'vendor', colId: 'vendor', cellRenderer: checkboxCellRenderer, width: 55, hide: true },
         { headerName: 'Memo', field: 'memo', colId: 'memo', cellRenderer: memoCellRenderer, width: 160, hide: true },
         { headerName: 'Run ID', field: 'run_id', colId: 'run_id', width: 120, hide: true },
+        { headerName: 'Name Normal', field: 'name_normal_detail', colId: 'name_normal_detail', width: 200, hide: true },
+        { headerName: 'Addr Normal', field: 'address_normal_detail', colId: 'address_normal_detail', width: 200, hide: true },
+        { headerName: 'Name Match', field: 'name_match_detail', colId: 'name_match_detail', width: 200, hide: true },
+        { headerName: 'Addr Match', field: 'addr_match_detail', colId: 'addr_match_detail', width: 200, hide: true },
         { headerName: 'Actions', colId: 'actions', cellRenderer: actionsCellRenderer, width: 80,
           sortable: false, filter: false, hide: true, pinned: 'right' }
     ];
