@@ -671,60 +671,29 @@ def get_datasources():
     })
 
 
-@app.route('/api/browse_excel')
-def browse_excel():
-    """Open a native file dialog to pick a CSV/Excel file for Canvas ID import"""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-
-        default_dir = r'C:\ClaudeMain\BA_Dedup2\BA_Dedup2\output'
-        if not Path(default_dir).exists():
-            default_dir = str(Path(__file__).parent)
-
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-
-        file_path = filedialog.askopenfilename(
-            title='Select File for Import',
-            initialdir=default_dir,
-            filetypes=[('Excel files', '*.xlsx *.xls'), ('CSV files', '*.csv'), ('All files', '*.*')]
-        )
-
-        root.destroy()
-
-        if not file_path:
-            return jsonify({'cancelled': True})
-
-        return jsonify({'file_path': file_path})
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
 if __name__ == '__main__':
-    # Ensure Snowflake tables have required schema
-    try:
-        ensure_snowflake_schema(DATA_CONFIG)
-        print("  Snowflake schema verified")
-    except Exception as e:
-        print(f"  WARNING: Could not verify Snowflake schema: {e}")
+    # In debug mode Flask spawns two processes; only initialise in the worker
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
+        try:
+            ensure_snowflake_schema(DATA_CONFIG)
+            print("  Snowflake schema verified")
+        except Exception as e:
+            print(f"  WARNING: Could not verify Snowflake schema: {e}")
 
-    print('\n' + '='*60)
-    print('  BA DEDUPLICATION REVIEW APPLICATION')
-    print('='*60)
-    print(f'  Data Source: SNOWFLAKE')
-    print(f'  Account: {DATA_CONFIG.get("account")}')
-    print(f'  Database: {DATA_CONFIG.get("database")}.{DATA_CONFIG.get("schema")}.{DATA_CONFIG.get("table")}')
+        print('\n' + '='*60)
+        print('  BA DEDUPLICATION REVIEW APPLICATION')
+        print('='*60)
+        print(f'  Data Source: SNOWFLAKE')
+        print(f'  Account: {DATA_CONFIG.get("account")}')
+        print(f'  Database: {DATA_CONFIG.get("database")}.{DATA_CONFIG.get("schema")}.{DATA_CONFIG.get("table")}')
 
-    df = load_cached_data()
-    print(f'  Records loaded: {len(df):,}')
-    if not df.empty and 'recommendation' in df.columns:
-        print(f'  Recommendations: {df["recommendation"].value_counts().to_dict()}')
+        df = load_cached_data()
+        print(f'  Records loaded: {len(df):,}')
+        if not df.empty and 'recommendation' in df.columns:
+            print(f'  Recommendations: {df["recommendation"].value_counts().to_dict()}')
 
-    print(f'\n  Open: http://localhost:5000')
-    print(f'  Press Ctrl+C to stop')
-    print('='*60 + '\n')
+        print(f'\n  Open: http://localhost:5000')
+        print(f'  Press Ctrl+C to stop')
+        print('='*60 + '\n')
 
     app.run(debug=True, host='0.0.0.0', port=5000)

@@ -19,12 +19,9 @@ Web-based interface for reviewing and updating Business Associate deduplication 
    pip install -r requirements.txt
    ```
 
-2. **Configure File Paths** (if different from defaults):
-   Edit `app.py` and update these paths:
-   ```python
-   EXCEL_FILE = Path(r'C:\ClaudeMain\BA_Dedup2\BA_Dedup2\output\canvas_dec_matches.xlsx')
-   DB_PATH = r'C:\ClaudeMain\BA_Dedup2\BA_Dedup2\ba_dedup.db'
-   ```
+2. **Configure Snowflake Connection**:
+   Copy `.env.example` to `.env` and fill in your Snowflake credentials.
+   See `DATA_SOURCES.md` for details.
 
 ## Running the Application
 
@@ -72,7 +69,7 @@ The main table shows:
    - DEC data (editable fields)
    - Match scores and recommendation
 3. Make changes and click **Save Changes**
-4. Changes are saved to both database and Excel file
+4. Changes are saved to Snowflake
 
 ### Quick Approve
 
@@ -137,8 +134,8 @@ Tracks all changes made through the interface:
 ### Backend Stack
 - Flask 3.0 - Web framework
 - Pandas 2.1 - Data manipulation
-- SQLite3 - Database
-- openpyxl 3.1 - Excel file handling
+- Snowflake - Cloud data warehouse
+- openpyxl 3.1 - Excel export handling
 
 ### Performance
 - Server-side pagination: Only loads visible records
@@ -153,14 +150,11 @@ If port 5000 is already in use, edit `app.py` and change:
 app.run(debug=True, host='0.0.0.0', port=5001)  # Use different port
 ```
 
-### Excel File Not Found
-Check that the `EXCEL_FILE` path in `app.py` points to the correct location.
-
-### Database Connection Error
-Ensure the `DB_PATH` in `app.py` points to your SQLite database file.
+### Snowflake Connection Error
+Verify credentials in `.env`, check that `snowflake-connector-python` is installed, and ensure your warehouse is running.
 
 ### Changes Not Saving
-Check the terminal for error messages. The update_log table is created automatically, but ensure the database file has write permissions.
+Check the terminal for error messages. The UPDATE_LOG table is created automatically in Snowflake on startup.
 
 ## Security Notes
 

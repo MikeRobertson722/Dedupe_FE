@@ -1,11 +1,10 @@
 """
 Data Source Abstraction Layer
-Supports loading data from Snowflake (primary) and Excel/CSV (for imports)
+Supports loading data from Snowflake
 """
 import os
 import time
 import pandas as pd
-from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 
@@ -88,20 +87,6 @@ def get_snowflake_connection(config: Dict[str, Any]):
 
 class DataSource:
     """Data source that returns consistent DataFrame structure"""
-
-    @staticmethod
-    def load_from_excel(file_path: str) -> pd.DataFrame:
-        """Load data from Excel or CSV file (used for Canvas ID imports)"""
-        file_path = Path(file_path)
-        if not file_path.exists():
-            print(f"Warning: File not found: {file_path}")
-            return pd.DataFrame()
-
-        if file_path.suffix.lower() == '.csv':
-            df = pd.read_csv(file_path)
-        else:
-            df = pd.read_excel(file_path)
-        return DataSource._normalize_dataframe(df)
 
     @staticmethod
     def load_from_snowflake(config: Dict[str, Any]) -> pd.DataFrame:
@@ -190,7 +175,6 @@ class DataSource:
 def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
     """
     Ensure Snowflake tables have all required columns and the UPDATE_LOG table exists.
-    Replaces the old init_database() function.
     """
     table = config.get('table', 'import_merge_matches').upper()
     conn = get_snowflake_connection(config)
@@ -349,16 +333,11 @@ def load_data(config: Dict[str, Any]) -> pd.DataFrame:
         config: Dictionary containing data source configuration
 
     Example config:
-        Snowflake: {'source_type': 'snowflake', 'account': '...', 'user': '...', ...}
-        Excel: {'source_type': 'excel', 'file_path': 'path/to/file.xlsx'}
+        {'source_type': 'snowflake', 'account': '...', 'user': '...', ...}
     """
     source_type = config.get('source_type', 'snowflake').lower()
 
     if source_type == 'snowflake':
         return DataSource.load_from_snowflake(config)
 
-    elif source_type == 'excel':
-        return DataSource.load_from_excel(config['file_path'])
-
-    else:
-        raise ValueError(f"Unknown source type: {source_type}. Supported: 'snowflake', 'excel'")
+    raise ValueError(f"Unknown source type: {source_type}. Supported: 'snowflake'")
