@@ -13,11 +13,11 @@ APP_DIR = r"c:\ClaudeMain\BA_Review_App"
 def app_server():
     """Start the Flask app if not already running. Session-scoped."""
     try:
-        r = requests.get(f"{BASE_URL}/api/stats", timeout=2)
+        r = requests.get(f"{BASE_URL}/api/stats", timeout=10)
         if r.status_code == 200:
             yield None  # Server already running
             return
-    except requests.ConnectionError:
+    except (requests.ConnectionError, requests.ReadTimeout):
         pass
 
     proc = subprocess.Popen(
@@ -28,10 +28,10 @@ def app_server():
     )
     for _ in range(30):
         try:
-            r = requests.get(f"{BASE_URL}/api/stats", timeout=1)
+            r = requests.get(f"{BASE_URL}/api/stats", timeout=10)
             if r.status_code == 200:
                 break
-        except requests.ConnectionError:
+        except (requests.ConnectionError, requests.ReadTimeout):
             time.sleep(1)
     else:
         proc.terminate()

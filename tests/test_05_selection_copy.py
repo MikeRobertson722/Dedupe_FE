@@ -14,17 +14,27 @@ class TestRowCheckboxSelection:
         expect(app_page.locator(SELECTION_INFO)).to_contain_text("1 record")
 
     def test_select_all_checkbox(self, app_page: Page):
-        app_page.locator(SELECT_ALL_CHECKBOX).click()
+        """Use AG Grid's selection column header checkbox to select all."""
+        header_cb = app_page.locator(
+            ".ag-header-cell[col-id='ag-Grid-SelectionColumn'] .ag-checkbox-input, "
+            ".ag-header-select-all .ag-checkbox-input, "
+            ".ag-header-cell[col-id='ag-Grid-SelectionColumn'] input"
+        ).first
+        header_cb.click()
         app_page.wait_for_timeout(300)
         info = app_page.locator(SELECTION_INFO).text_content()
         assert "record" in info
-        # Should have at least 1 selected
         assert "No records" not in info
 
     def test_deselect_all(self, app_page: Page):
-        app_page.locator(SELECT_ALL_CHECKBOX).click()
+        header_cb = app_page.locator(
+            ".ag-header-cell[col-id='ag-Grid-SelectionColumn'] .ag-checkbox-input, "
+            ".ag-header-select-all .ag-checkbox-input, "
+            ".ag-header-cell[col-id='ag-Grid-SelectionColumn'] input"
+        ).first
+        header_cb.click()
         app_page.wait_for_timeout(300)
-        app_page.locator(SELECT_ALL_CHECKBOX).click()
+        header_cb.click()
         app_page.wait_for_timeout(300)
         expect(app_page.locator(SELECTION_INFO)).to_contain_text("No records selected")
 
@@ -39,12 +49,12 @@ class TestRowCheckboxSelection:
 class TestCellSelection:
 
     def test_single_cell_click(self, app_page: Page):
-        cell = app_page.locator("#matchesGrid .ag-row:first-child .ag-cell[col-id='canvas_name']")
+        cell = app_page.locator("#matchesGrid .ag-row:first-child .ag-cell[col-id='source_name']")
         cell.click()
         expect(cell).to_have_class(re.compile(r"cell-selected"))
 
     def test_click_outside_clears_selection(self, app_page: Page):
-        cell = app_page.locator("#matchesGrid .ag-row:first-child .ag-cell[col-id='canvas_name']")
+        cell = app_page.locator("#matchesGrid .ag-row:first-child .ag-cell[col-id='source_name']")
         cell.click()
         expect(cell).to_have_class(re.compile(r"cell-selected"))
         app_page.locator(NAVBAR).click()
@@ -52,12 +62,18 @@ class TestCellSelection:
         assert selected.count() == 0
 
     def test_shift_click_same_column_range(self, app_page: Page):
-        rows = app_page.locator("#matchesGrid .ag-row")
-        row1_cell = rows.nth(0).locator(".ag-cell[col-id='canvas_name']")
-        row3_cell = rows.nth(2).locator(".ag-cell[col-id='canvas_name']")
+        # Use source_name which is visible by default
+        first_cell = app_page.locator(
+            "#matchesGrid .ag-center-cols-container .ag-row:first-child .ag-cell[col-id='source_name']"
+        )
+        first_cell.scroll_into_view_if_needed()
+        first_cell.click()
 
-        row1_cell.click()
-        row3_cell.click(modifiers=["Shift"])
+        third_cell = app_page.locator(
+            "#matchesGrid .ag-center-cols-container .ag-row:nth-child(3) .ag-cell[col-id='source_name']"
+        )
+        third_cell.scroll_into_view_if_needed()
+        third_cell.click(modifiers=["Shift"])
 
         selected = app_page.locator(CELL_SELECTED)
         assert selected.count() >= 3
@@ -68,7 +84,7 @@ class TestCtrlCCopy:
     def test_ctrl_c_copies_cell_value(self, app_page: Page):
         app_page.context.grant_permissions(["clipboard-read", "clipboard-write"])
 
-        cell = app_page.locator("#matchesGrid .ag-row:first-child .ag-cell[col-id='canvas_name']")
+        cell = app_page.locator("#matchesGrid .ag-row:first-child .ag-cell[col-id='source_name']")
         cell.click()
         expected = cell.text_content().strip()
 

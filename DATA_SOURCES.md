@@ -42,13 +42,13 @@ Copy `.env.example` to `.env` and fill in your credentials.
 The Snowflake table must provide a DataFrame with these columns:
 
 ### Required Columns:
-- `canvas_id` - Canvas identifier
-- `canvas_ssn` - Canvas SSN
-- `canvas_name` - Canvas name
-- `canvas_address` - Canvas address
-- `canvas_city` - Canvas city
-- `canvas_state` - Canvas state
-- `canvas_zip` - Canvas zip
+- `source_id` - Source identifier
+- `source_ssn` - Source SSN
+- `source_name` - Source name
+- `source_address` - Source address
+- `source_city` - Source city
+- `source_state` - Source state
+- `source_zip` - Source zip
 - `dec_hdrcode` - DEC header code
 - `dec_name` - DEC name
 - `dec_address` - DEC address

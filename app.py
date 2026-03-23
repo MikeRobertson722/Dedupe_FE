@@ -196,7 +196,7 @@ def get_matches():
 
         sortable_fields = {
             'id', 'ssn_match', 'name_score', 'address_score', 'recommendation',
-            'canvas_name', 'canvas_address', 'canvas_city', 'canvas_id',
+            'source_name', 'source_address', 'source_city', 'source_id',
             'dec_name', 'dec_address', 'dec_city', 'dec_hdrcode', 'dec_address_looked_up',
             'jib', 'rev', 'vendor', 'how_to_process', 'memo'
         }
@@ -213,8 +213,9 @@ def get_matches():
         # Only send columns the frontend needs (skip internal/unused fields)
         needed_cols = [
             'id', 'ssn_match', 'name_score', 'address_score', 'nameaddrscore', 'recommendation',
-            'how_to_process', 'canvas_id', 'canvas_addrseq', 'canvas_name',
-            'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip', 'canvas_ssn',
+            'how_to_process', 'source_id', 'source_addrseq', 'source_name',
+            'source_address', 'source_city', 'source_state', 'source_zip', 'source_ssn',
+            'source_address_recomend',
             'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
             'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
             'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id',
@@ -281,6 +282,25 @@ def get_record(row_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/db_record/<int:uid>')
+def get_db_record(uid):
+    """Query Snowflake directly by UID (id column) to verify persisted data."""
+    try:
+        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT * FROM {table} WHERE ID = %s", (uid,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'error': f'No record with ID={uid}'}), 404
+        cols = [desc[0].lower() for desc in cursor.description]
+        record = dict(zip(cols, row))
+        record = {k: (None if v is None else v) for k, v in record.items()}
+        return jsonify(record)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/update', methods=['POST'])
 def update_record():
     """Update a single field on a record. All changes are deferred until Save."""
@@ -295,8 +315,8 @@ def update_record():
             return jsonify({'error': 'Missing required fields'}), 400
 
         allowed_fields = {
-            'recommendation', 'canvas_name', 'canvas_address',
-            'canvas_city', 'canvas_state', 'canvas_zip', 'address_reason',
+            'recommendation', 'source_name', 'source_address_recomend',
+            'source_city', 'source_state', 'source_zip', 'address_reason',
             'jib', 'rev', 'vendor', 'how_to_process', 'memo'
         }
         if field not in allowed_fields:
@@ -395,8 +415,9 @@ def get_matches_all():
 
         needed_cols = [
             'id', 'ssn_match', 'name_score', 'address_score', 'nameaddrscore', 'recommendation',
-            'how_to_process', 'canvas_id', 'canvas_addrseq', 'canvas_name',
-            'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip', 'canvas_ssn',
+            'how_to_process', 'source_id', 'source_addrseq', 'source_name',
+            'source_address', 'source_city', 'source_state', 'source_zip', 'source_ssn',
+            'source_address_recomend',
             'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
             'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
             'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id',
@@ -446,7 +467,7 @@ def search_replace():
             return jsonify({'error': 'Search text is required'}), 400
 
         text_fields = {
-            'canvas_name', 'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip',
+            'source_name', 'source_address_recomend', 'source_city', 'source_state', 'source_zip',
             'recommendation', 'how_to_process', 'memo', 'address_reason'
         }
 
@@ -533,30 +554,30 @@ def search_replace():
 
 @app.route('/api/import_ids', methods=['POST'])
 def import_ids():
-    """Import Canvas IDs from file — updates in-memory only (pending until Save)"""
+    """Import Source IDs from file — updates in-memory only (pending until Save)"""
     global _pending_changes
     try:
         data = request.json
         field = data.get('field')
-        canvas_ids = data.get('canvas_ids', [])
+        source_ids = data.get('source_ids', data.get('canvas_ids', []))
 
         if field not in ('jib', 'rev', 'vendor'):
             return jsonify({'error': 'Invalid field'}), 400
-        if not canvas_ids:
-            return jsonify({'error': 'No Canvas IDs provided'}), 400
+        if not source_ids:
+            return jsonify({'error': 'No Source IDs provided'}), 400
 
         df = load_cached_data()
 
-        # Convert canvas_id column to string for matching
-        df_canvas_str = df['canvas_id'].astype(str).str.strip()
-        canvas_ids_str = [str(cid).strip() for cid in canvas_ids]
+        # Convert source_id column to string for matching
+        df_source_str = df['source_id'].astype(str).str.strip()
+        source_ids_str = [str(cid).strip() for cid in source_ids]
 
         # Find matching rows (only those not already checked)
-        mask = df_canvas_str.isin(canvas_ids_str) & (df[field] != 1)
+        mask = df_source_str.isin(source_ids_str) & (df[field] != 1)
         row_ids = df.index[mask].tolist()
 
         if not row_ids:
-            total_found = int(df_canvas_str.isin(canvas_ids_str).sum())
+            total_found = int(df_source_str.isin(source_ids_str).sum())
             return jsonify({
                 'success': True,
                 'updated': 0,
@@ -580,7 +601,7 @@ def import_ids():
         return jsonify({
             'success': True,
             'updated': len(row_ids),
-            'total_in_file': len(canvas_ids_str),
+            'total_in_file': len(source_ids_str),
             'pending_count': len(_pending_changes),
             'message': f'Checked {field.upper()} for {len(row_ids)} records (unsaved)'
         })
@@ -604,8 +625,8 @@ def save_changes():
         # Build audit log entries from pending changes
         log_entries = []
         for row_id, fields in _pending_changes.items():
-            cid = str(df.at[row_id, 'canvas_id'])
-            ssn = str(df.at[row_id, 'canvas_ssn'])
+            cid = str(df.at[row_id, 'source_id'])
+            ssn = str(df.at[row_id, 'source_ssn'])
             for field, change in fields.items():
                 if isinstance(change, tuple):
                     old_val, new_val = change

@@ -117,10 +117,10 @@ class DataSource:
         Handles column mapping for tables with different schemas (e.g. dec_ba_master).
         """
         # Detect dec_ba_master schema and map columns to expected grid structure
-        if 'hdrcode' in df.columns and 'canvas_id' not in df.columns:
+        if 'hdrcode' in df.columns and 'source_id' not in df.columns:
             column_map = {
                 'hdrcode': 'dec_hdrcode',
-                'ssn': 'canvas_ssn',
+                'ssn': 'source_ssn',
                 'hdrname': 'dec_name',
                 'addrcontact': 'dec_contact',
                 'addraddress': 'dec_address',
@@ -131,8 +131,8 @@ class DataSource:
             }
             df = df.rename(columns=column_map)
 
-            for col in ('canvas_id', 'canvas_name', 'canvas_address',
-                        'canvas_city', 'canvas_state', 'canvas_zip'):
+            for col in ('source_id', 'source_name', 'source_address',
+                        'source_city', 'source_state', 'source_zip'):
                 if col not in df.columns:
                     df[col] = ''
 
@@ -184,6 +184,26 @@ def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
     cursor.execute(f"DESCRIBE TABLE {table}")
     existing_cols = {row[0].lower() for row in cursor.fetchall()}
 
+    # Rename CANVAS_* → SOURCE_* columns (one-time migration, safe to re-run)
+    canvas_to_source = {
+        'CANVAS_ID': 'SOURCE_ID',
+        'CANVAS_SSN': 'SOURCE_SSN',
+        'CANVAS_NAME': 'SOURCE_NAME',
+        'CANVAS_ADDRESS': 'SOURCE_ADDRESS',
+        'CANVAS_CITY': 'SOURCE_CITY',
+        'CANVAS_STATE': 'SOURCE_STATE',
+        'CANVAS_ZIP': 'SOURCE_ZIP',
+        'CANVAS_ADDRSEQ': 'SOURCE_ADDRSEQ',
+    }
+    for old_col, new_col in canvas_to_source.items():
+        if old_col.lower() in existing_cols and new_col.lower() not in existing_cols:
+            try:
+                cursor.execute(f"ALTER TABLE {table} RENAME COLUMN {old_col} TO {new_col}")
+                existing_cols.discard(old_col.lower())
+                existing_cols.add(new_col.lower())
+            except Exception as e:
+                print(f"  Column rename {old_col}→{new_col} skipped: {e}")
+
     # Add missing columns
     needed = {
         'jib': 'NUMBER DEFAULT 0',
@@ -200,8 +220,8 @@ def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS UPDATE_LOG (
             ID NUMBER AUTOINCREMENT,
-            CANVAS_ID VARCHAR,
-            CANVAS_SSN VARCHAR,
+            SOURCE_ID VARCHAR,
+            SOURCE_SSN VARCHAR,
             FIELD_NAME VARCHAR,
             OLD_VALUE VARCHAR,
             NEW_VALUE VARCHAR,
@@ -209,6 +229,18 @@ def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
             CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
         )
     """)
+
+    # Rename UPDATE_LOG columns (one-time migration, safe to re-run)
+    try:
+        cursor.execute("DESCRIBE TABLE UPDATE_LOG")
+        log_cols = {row[0].lower() for row in cursor.fetchall()}
+        if 'canvas_id' in log_cols and 'source_id' not in log_cols:
+            cursor.execute("ALTER TABLE UPDATE_LOG RENAME COLUMN CANVAS_ID TO SOURCE_ID")
+        if 'canvas_ssn' in log_cols and 'source_ssn' not in log_cols:
+            cursor.execute("ALTER TABLE UPDATE_LOG RENAME COLUMN CANVAS_SSN TO SOURCE_SSN")
+    except Exception as e:
+        print(f"  UPDATE_LOG column rename skipped: {e}")
+
     conn.commit()
 
 
@@ -224,7 +256,7 @@ def merge_changes_to_snowflake(
     Args:
         config: Snowflake connection config
         pending_changes: {row_id: {field: (old_value, new_value), ...}, ...}
-        df: Current in-memory DataFrame (to look up canvas_id/canvas_ssn)
+        df: Current in-memory DataFrame (to look up source_id/source_ssn)
         cursor: Optional shared cursor (caller manages commit)
 
     Returns:
@@ -234,6 +266,11 @@ def merge_changes_to_snowflake(
         return 0
 
     table = config.get('table', 'import_merge_matches').upper()
+
+    # Map in-memory field names to Snowflake column names where they differ
+    field_to_db_col = {
+        'source_address_recomend': 'source_address',
+    }
 
     # Collect all fields being updated across all rows
     all_fields = set()
@@ -245,8 +282,8 @@ def merge_changes_to_snowflake(
     placeholders = []
     params: list = []
     for row_id, fields in pending_changes.items():
-        cid = str(df.at[row_id, 'canvas_id'])
-        ssn = str(df.at[row_id, 'canvas_ssn'])
+        cid = str(df.at[row_id, 'source_id'])
+        ssn = str(df.at[row_id, 'source_ssn'])
         row_ph = ['%s', '%s']
         params.extend([cid, ssn])
         for f in all_fields:
@@ -256,7 +293,8 @@ def merge_changes_to_snowflake(
             elif entry is not None:
                 params.append(entry)
             else:
-                params.append(None)
+                # No change for this field on this row — preserve current value
+                params.append(df.at[row_id, f] if f in df.columns else None)
             row_ph.append('%s')
         placeholders.append('(' + ', '.join(row_ph) + ')')
 
@@ -266,15 +304,18 @@ def merge_changes_to_snowflake(
         cursor = conn.cursor()
 
     # Single MERGE: all rows in one statement
-    src_cols = ['CID', 'SSN'] + [f.upper() for f in all_fields]
+    # Use mapped DB column names for the Snowflake MERGE
+    db_cols = [field_to_db_col.get(f, f).upper() for f in all_fields]
+    src_cols = ['CID', 'SSN'] + db_cols
     values_block = ', '.join(placeholders)
-    set_clause = ', '.join(f't.{f.upper()} = s.{f.upper()}' for f in all_fields)
+    set_clause = ', '.join(f't.{c} = s.{c}' for c in db_cols)
+    print(f"  [MERGE DEBUG] fields={all_fields}, rows={len(pending_changes)}, params={params[:10]}{'...' if len(params) > 10 else ''}")
 
     sql = (
         f"MERGE INTO {table} t USING ("
         f"SELECT {', '.join('column' + str(i+1) + ' AS ' + c for i, c in enumerate(src_cols))} "
         f"FROM VALUES {values_block}"
-        f") s ON t.CANVAS_ID = s.CID AND t.CANVAS_SSN = s.SSN "
+        f") s ON t.SOURCE_ID = s.CID AND t.SOURCE_SSN = s.SSN "
         f"WHEN MATCHED THEN UPDATE SET {set_clause}"
     )
 
@@ -295,7 +336,7 @@ def write_audit_log_to_snowflake(
 
     Args:
         config: Snowflake connection config
-        log_entries: List of (canvas_id, canvas_ssn, field_name, old_value, new_value, updated_at)
+        log_entries: List of (source_id, source_ssn, field_name, old_value, new_value, updated_at)
         cursor: Optional shared cursor (caller manages commit)
     """
     if not log_entries:
@@ -306,7 +347,7 @@ def write_audit_log_to_snowflake(
         conn = get_snowflake_connection(config)
         cursor = conn.cursor()
     cursor.executemany(
-        """INSERT INTO UPDATE_LOG (CANVAS_ID, CANVAS_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE, UPDATED_AT)
+        """INSERT INTO UPDATE_LOG (SOURCE_ID, SOURCE_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE, UPDATED_AT)
            VALUES (%s, %s, %s, %s, %s, %s)""",
         log_entries
     )

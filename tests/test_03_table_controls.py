@@ -1,22 +1,8 @@
-"""Tests for page size, search, sorting, column visibility, pagination."""
+"""Tests for search, sorting, column visibility."""
 import pytest
 from playwright.sync_api import Page, expect
 from helpers.selectors import *
 from helpers.wait_helpers import wait_for_grid_update, get_grid_info_counts
-
-
-class TestPageSize:
-
-    def test_default_page_size_100(self, app_page: Page):
-        selected = app_page.locator(PAGE_SIZE_SELECT).input_value()
-        assert selected == "100"
-
-    def test_page_size_500(self, app_page: Page):
-        app_page.select_option(PAGE_SIZE_SELECT, "500")
-        wait_for_grid_update(app_page)
-        # AG Grid virtualises rows so we can't count DOM rows directly;
-        # verify the select value changed
-        assert app_page.locator(PAGE_SIZE_SELECT).input_value() == "500"
 
 
 class TestGlobalSearch:
@@ -99,9 +85,15 @@ class TestColumnVisibility:
         assert unchecked.count() == 0
 
 
-class TestPagination:
+class TestClientSideRendering:
 
-    def test_pagination_present(self, app_page: Page):
-        # AG Grid pagination panel should be visible
-        paging = app_page.locator(".ag-paging-panel")
-        expect(paging).to_be_visible()
+    def test_all_rows_loaded_client_side(self, app_page: Page):
+        """Pagination is disabled; all data is loaded client-side."""
+        stats = api_get_stats()
+        displayed, total = get_grid_info_counts(app_page)
+        assert total == stats['total_records']
+        assert displayed == total
+
+
+# Import api_get_stats for the test above
+from helpers.api_helpers import api_get_stats

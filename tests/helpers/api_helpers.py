@@ -16,6 +16,13 @@ def api_get_record(row_id: int) -> dict:
     return r.json()
 
 
+def api_get_db_record(uid: int) -> dict:
+    """Query Snowflake directly by UID (id column) to verify persisted data."""
+    r = requests.get(f"{BASE_URL}/api/db_record/{uid}")
+    r.raise_for_status()
+    return r.json()
+
+
 def api_update_field(row_id: int, field: str, value) -> dict:
     r = requests.post(f"{BASE_URL}/api/update", json={
         "row_id": row_id, "field": field, "value": value

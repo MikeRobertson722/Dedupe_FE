@@ -8,42 +8,55 @@ from helpers.api_helpers import api_get_stats
 
 class TestRecommendationFilter:
 
-    def test_select_single_recommendation(self, app_page: Page):
-        app_page.click(REC_FILTER_BTN)
-        first_cb = app_page.locator(REC_CHECKBOX).first
-        first_cb.check()
+    def test_filter_by_single_recommendation(self, app_page: Page):
+        """Filter to a single rec by clicking a rec card."""
+        _, total = get_grid_info_counts(app_page)
+        cards = app_page.locator(f"{REC_CARD} .rec-card")
+        # Click the second card (first non-ALL card)
+        cards.nth(1).click()
         wait_for_grid_update(app_page)
-
-        displayed, total = get_grid_info_counts(app_page)
+        displayed, _ = get_grid_info_counts(app_page)
         assert displayed < total
 
-    def test_select_multiple_recommendations(self, app_page: Page):
-        app_page.click(REC_FILTER_BTN)
-        cbs = app_page.locator(REC_CHECKBOX)
-        cbs.nth(0).check()
-        cbs.nth(1).check()
+    def test_filter_by_rec_via_js(self, app_page: Page):
+        """Filter using filterByRec JS function sets score filters."""
+        _, total = get_grid_info_counts(app_page)
+        # Get a recommendation name from the API
+        stats = api_get_stats()
+        recs = list(stats['recommendations'].keys())
+        # Filter to one with fewer records than total
+        for rec in recs:
+            if stats['recommendations'][rec] < total:
+                app_page.evaluate(f"() => filterByRec('{rec}')")
+                wait_for_grid_update(app_page)
+                displayed, _ = get_grid_info_counts(app_page)
+                assert displayed <= total
+                break
+
+    def test_clear_filters_resets_rec_filter(self, app_page: Page):
+        """After filterByRec, clearFilters should restore all rows."""
+        _, total = get_grid_info_counts(app_page)
+        cards = app_page.locator(f"{REC_CARD} .rec-card")
+        cards.nth(1).click()
         wait_for_grid_update(app_page)
 
-        label = app_page.locator("#recFilterBtn")
-        expect(label).to_contain_text("2 selected")
-
-    def test_select_all_button(self, app_page: Page):
-        app_page.click(REC_FILTER_BTN)
-        app_page.locator(".rec-filter-menu a:has-text('Select All')").click()
+        app_page.click(CLEAR_FILTERS_BTN)
         wait_for_grid_update(app_page)
-        unchecked = app_page.locator(f"{REC_CHECKBOX}:not(:checked)")
-        assert unchecked.count() == 0
+        displayed, restored_total = get_grid_info_counts(app_page)
+        assert displayed == total
 
-    def test_clear_all_button(self, app_page: Page):
-        app_page.click(REC_FILTER_BTN)
-        app_page.locator(REC_CHECKBOX).first.check()
+    def test_all_card_clears_filters(self, app_page: Page):
+        """Clicking the ALL card calls clearFilters."""
+        _, total = get_grid_info_counts(app_page)
+        cards = app_page.locator(f"{REC_CARD} .rec-card")
+        # Click a non-ALL card first
+        cards.nth(1).click()
         wait_for_grid_update(app_page)
-        displayed_before, _ = get_grid_info_counts(app_page)
-
-        app_page.locator(".rec-filter-menu a:has-text('Clear All')").click()
+        # Click the ALL card (first card)
+        cards.first.click()
         wait_for_grid_update(app_page)
-        displayed_after, _ = get_grid_info_counts(app_page)
-        assert displayed_after >= displayed_before
+        displayed, _ = get_grid_info_counts(app_page)
+        assert displayed == total
 
 
 class TestSSNFilter:
@@ -112,8 +125,10 @@ class TestClearFilters:
 class TestRecommendationCardClick:
 
     def test_card_click_filters(self, app_page: Page):
-        first_card = app_page.locator(REC_CARD).first
-        first_card.click()
+        _, total = get_grid_info_counts(app_page)
+        # Click the second card (first non-ALL recommendation)
+        cards = app_page.locator(f"{REC_CARD} .rec-card")
+        cards.nth(1).click()
         wait_for_grid_update(app_page)
-        displayed, total = get_grid_info_counts(app_page)
+        displayed, _ = get_grid_info_counts(app_page)
         assert displayed < total

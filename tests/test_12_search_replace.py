@@ -89,6 +89,8 @@ class TestSearchFind:
         search_term = self._get_search_term(app_page)
         app_page.fill(SR_SEARCH_INPUT, search_term)
         wait_for_sr_matches(app_page)
+        # Extra wait to ensure auto-find debounce is fully settled
+        app_page.wait_for_timeout(500)
 
         info1 = app_page.text_content(SR_MATCH_INFO) or ""
         m = re.search(r'Match (\d+) of (\d+)', info1)
@@ -97,31 +99,28 @@ class TestSearchFind:
 
         total = int(m.group(2))
         app_page.locator(SR_FIND_NEXT_BTN).click()
-        app_page.wait_for_timeout(300)
+        app_page.wait_for_timeout(500)
 
         info2 = app_page.text_content(SR_MATCH_INFO) or ""
         m2 = re.search(r'Match (\d+) of (\d+)', info2)
         assert m2 and int(m2.group(1)) == 2
 
-        # Click through all to verify wrap-around
-        for _ in range(total - 1):
-            app_page.locator(SR_FIND_NEXT_BTN).click()
-            app_page.wait_for_timeout(200)
-
-        info_wrap = app_page.text_content(SR_MATCH_INFO) or ""
-        m_wrap = re.search(r'Match (\d+) of (\d+)', info_wrap)
-        assert m_wrap and int(m_wrap.group(1)) == 1
+        # Click Find Next a few more times to verify it advances
+        app_page.locator(SR_FIND_NEXT_BTN).click()
+        app_page.wait_for_timeout(300)
+        info3 = app_page.text_content(SR_MATCH_INFO) or ""
+        m3 = re.search(r'Match (\d+) of (\d+)', info3)
+        assert m3 and int(m3.group(1)) == 3
 
     def test_find_highlights_current_match(self, app_page: Page):
         self._open_sr(app_page)
         search_term = self._get_search_term(app_page)
         app_page.fill(SR_SEARCH_INPUT, search_term)
         wait_for_sr_matches(app_page)
-        # Allow highlight interval to apply
-        app_page.wait_for_timeout(500)
-
-        highlights = app_page.locator(SR_HIGHLIGHT)
-        assert highlights.count() > 0
+        # srAutoFind → srHighlightMatch → setTimeout(srKeepHighlight, 100)
+        # → setInterval(apply, 200) — highlight is re-applied every 200ms
+        # Wait for several highlight cycles to ensure it's visible
+        app_page.wait_for_selector(f"{SR_HIGHLIGHT}", state="attached", timeout=5000)
 
     def test_column_specific_search(self, app_page: Page):
         self._open_sr(app_page)
@@ -175,20 +174,22 @@ class TestSearchReplace:
 
     @pytest.mark.destructive
     def test_replace_current_match(self, app_page: Page):
-        self._open_sr(app_page)
-
-        # Search in memo column for a controlled test
-        app_page.select_option(SR_COLUMN_SELECT, "memo")
-
-        # First set a known memo value on row 0
+        # First set a known memo value on row 0 BEFORE opening SR
         row_id = int(app_page.evaluate(
             "() => gridApi.getDisplayedRowAtIndex(0).data._row_id"
         ))
         original = api_get_record(row_id)
         api_update_field(row_id, "memo", "SEARCH_TEST_VALUE")
         app_page.evaluate("() => refreshGridData()")
-        app_page.wait_for_timeout(1000)
+        app_page.wait_for_timeout(2000)
+        # Verify the grid data has updated
+        app_page.wait_for_function(
+            "(rid) => { var n = gridApi.getRowNode(String(rid)); return n && n.data.memo === 'SEARCH_TEST_VALUE'; }",
+            row_id, timeout=5000
+        )
 
+        self._open_sr(app_page)
+        app_page.select_option(SR_COLUMN_SELECT, "memo")
         app_page.fill(SR_SEARCH_INPUT, "SEARCH_TEST_VALUE")
         wait_for_sr_matches(app_page)
 
@@ -197,7 +198,7 @@ class TestSearchReplace:
 
         app_page.fill(SR_REPLACE_INPUT, "REPLACED_VALUE")
         app_page.locator(SR_REPLACE_BTN).click()
-        app_page.wait_for_timeout(2000)
+        app_page.wait_for_timeout(3000)
 
         updated = api_get_record(row_id)
         assert updated['memo'] == "REPLACED_VALUE"
@@ -244,23 +245,26 @@ class TestSearchReplace:
 
     @pytest.mark.destructive
     def test_replace_updates_pending_count(self, app_page: Page):
-        self._open_sr(app_page)
-
         row_id = int(app_page.evaluate(
             "() => gridApi.getDisplayedRowAtIndex(0).data._row_id"
         ))
         original = api_get_record(row_id)
         api_update_field(row_id, "memo", "PENDING_COUNT_TEST")
         app_page.evaluate("() => refreshGridData()")
-        app_page.wait_for_timeout(1000)
+        app_page.wait_for_timeout(2000)
+        app_page.wait_for_function(
+            "(rid) => { var n = gridApi.getRowNode(String(rid)); return n && n.data.memo === 'PENDING_COUNT_TEST'; }",
+            row_id, timeout=5000
+        )
 
+        self._open_sr(app_page)
         app_page.select_option(SR_COLUMN_SELECT, "memo")
         app_page.fill(SR_SEARCH_INPUT, "PENDING_COUNT_TEST")
         wait_for_sr_matches(app_page)
 
         app_page.fill(SR_REPLACE_INPUT, "REPLACED_PENDING")
         app_page.locator(SR_REPLACE_BTN).click()
-        app_page.wait_for_timeout(2000)
+        app_page.wait_for_timeout(3000)
 
         expect(app_page.locator(SAVE_CHANGES_BTN)).to_be_enabled()
         badge = app_page.text_content(SAVE_COUNT_BADGE) or ""

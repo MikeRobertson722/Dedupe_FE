@@ -9,11 +9,11 @@ class TestColumnResize:
     def test_column_headers_are_resizable(self, app_page: Page):
         """AG Grid columns with resizable:true show resize handles on hover."""
         # Verify a resizable column header exists
-        header = app_page.locator(".ag-header-cell[col-id='canvas_name']")
+        header = app_page.locator(".ag-header-cell[col-id='source_name']")
         expect(header).to_be_visible()
 
     def test_drag_resize_changes_width(self, app_page: Page):
-        header = app_page.locator(".ag-header-cell[col-id='canvas_name']")
+        header = app_page.locator(".ag-header-cell[col-id='source_name']")
         width_before = header.evaluate("el => el.getBoundingClientRect().width")
 
         # AG Grid resize handle is on the right edge of the header

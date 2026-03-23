@@ -41,8 +41,15 @@ body {
     padding-bottom: 1px;
 }
 
-/* Canvas column headers (blue) */
-.ag-header-canvas { background-color: #3b6fc0 !important; }
+/* Large text cell editor popup (source_address multi-line) */
+.ag-large-text-input textarea {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.8rem;
+    line-height: 1.4;
+}
+
+/* Source column headers (blue) */
+.ag-header-source { background-color: #3b6fc0 !important; }
 /* DEC column headers (mauve) */
 .ag-header-dec { background-color: #9b4d6e !important; }
 

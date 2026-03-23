@@ -104,10 +104,11 @@ const COL_DEFS = [
     ['N+A', '#212529', 'nameaddrscore', false],
     ['Status', '#212529', 'recommendation'],
     ['Process', '#212529', 'how_to_process'],
-    ['Canvas Name', '#1e3a8a', 'canvas_name'],
-    ['Canvas Addr', '#1e3a8a', 'canvas_address'],
-    ['Canvas City/St/Zip', '#1e3a8a', 'canvas_csz'],
-    ['Canvas ID', '#1e3a8a', 'canvas_id', false],
+    ['Source Name', '#1e3a8a', 'source_name'],
+    ['Source Addr', '#1e3a8a', 'source_address'],
+    ['Source City/St/Zip', '#1e3a8a', 'source_csz'],
+    ['Source Addr Recomend', '#1e3a8a', 'source_address_recomend'],
+    ['Source ID', '#1e3a8a', 'source_id', false],
     ['DEC Name', '#9b4d6e', 'dec_name'],
     ['DEC Addr', '#9b4d6e', 'dec_address'],
     ['DEC City/St/Zip', '#9b4d6e', 'dec_csz'],
@@ -238,15 +239,35 @@ function recCellRenderer(params) {
     return '<span class="badge" style="background-color:' + color + '; font-size:0.6rem; white-space:nowrap; line-height:18px; padding:0 4px;" title="' + val + '">' + val + '</span>';
 }
 
-function processValueGetter(params) {
-    var val = params.data.how_to_process || '';
-    if (!val) {
-        var rec = (params.data.recommendation || '').toUpperCase();
-        if (rec === 'NEW BA AND NEW ADDRESS') val = 'Add new BA and address';
-        else if (rec === 'EXISTING BA ADD NEW ADDRESS') val = 'Add address to existing BA';
-        else if (rec === 'EXISTING BA AND EXISTING ADDRESS') val = 'Merge BA and address';
+function processDefaultForRec(rec) {
+    var r = (rec || '').toUpperCase();
+    if (r === 'NEW BA AND NEW ADDRESS') return 'Add new BA and address';
+    if (r === 'EXISTING BA ADD NEW ADDRESS') return 'Add address to existing BA';
+    if (r === 'EXISTING BA AND EXISTING ADDRESS') return 'Merge BA and address';
+    return '';
+}
+
+function prefillProcessField(rows) {
+    // Pre-populate how_to_process from recommendation so AG Grid change
+    // detection works correctly (no valueGetter masking the real value).
+    rows.forEach(function(row) {
+        if (!row.how_to_process) {
+            row.how_to_process = processDefaultForRec(row.recommendation);
+        }
+    });
+    return rows;
+}
+
+function processCellRenderer(params) {
+    var val = params.value || '';
+    var html = '<select class="process-select" data-row-id="' + params.data._row_id + '" style="width:100%;border:none;background:transparent;font-size:0.75rem;cursor:pointer;padding:0 2px;">';
+    html += '<option value=""' + (val === '' ? ' selected' : '') + '></option>';
+    for (var i = 0; i < PROCESS_OPTS.length; i++) {
+        var opt = PROCESS_OPTS[i];
+        html += '<option value="' + opt + '"' + (val === opt ? ' selected' : '') + '>' + opt + '</option>';
     }
-    return val;
+    html += '</select>';
+    return html;
 }
 
 function checkboxCellRenderer(params) {
@@ -271,15 +292,15 @@ function actionsCellRenderer(params) {
            '<button class="btn btn-sm btn-outline-success py-0 px-1" onclick="quickApprove(' + rid + ')" title="Approve"><i class="fas fa-check"></i></button>';
 }
 
-function canvasIdValueGetter(params) {
+function sourceIdValueGetter(params) {
     var d = params.data;
-    var seq = d.canvas_addrseq || '';
-    return seq ? (d.canvas_id || '') + '-' + seq : (d.canvas_id || '');
+    var seq = d.source_addrseq || '';
+    return seq ? (d.source_id || '') + '-' + seq : (d.source_id || '');
 }
 
-function canvasCszValueGetter(params) {
+function sourceCszValueGetter(params) {
     var d = params.data;
-    return (d.canvas_city || '') + ', ' + (d.canvas_state || '') + ' ' + (d.canvas_zip || '');
+    return (d.source_city || '') + ', ' + (d.source_state || '') + ' ' + (d.source_zip || '');
 }
 
 function decCszValueGetter(params) {
@@ -322,29 +343,78 @@ function initGrid() {
           }
         },
         { headerName: 'Status', field: 'recommendation', colId: 'recommendation', cellRenderer: recCellRenderer, width: 220 },
-        { headerName: 'Process', field: 'how_to_process', colId: 'how_to_process', width: 160,
-          editable: true,
-          cellEditor: 'agSelectCellEditor',
-          cellEditorParams: { values: PROCESS_OPTS },
-          cellStyle: { fontSize: '0.75rem', cursor: 'pointer' },
-          valueGetter: processValueGetter,
-          valueSetter: function(params) {
-              params.data.how_to_process = params.newValue;
-              return true;
-          }
+        { headerName: 'Process', field: 'how_to_process', colId: 'how_to_process', width: 190,
+          cellRenderer: processCellRenderer,
+          cellStyle: { padding: '0 4px' }
         },
-        { headerName: 'Canvas Name', field: 'canvas_name', colId: 'canvas_name', minWidth: 140, flex: 1,
-          headerClass: 'ag-header-canvas', wrapText: false,
+        { headerName: 'Source Name', field: 'source_name', colId: 'source_name', minWidth: 140, flex: 1,
+          headerClass: 'ag-header-source', wrapText: false, editable: true,
           cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
         },
-        { headerName: 'Canvas Addr', field: 'canvas_address', colId: 'canvas_address', minWidth: 140, flex: 1,
-          headerClass: 'ag-header-canvas', wrapText: false,
+        { headerName: 'Source Addr', field: 'source_address', colId: 'source_address', minWidth: 200, flex: 2,
+          headerClass: 'ag-header-source',
+          autoHeight: true,
+          cellStyle: { 'white-space': 'pre-wrap', 'line-height': '1.3' },
+          cellRenderer: function(params) {
+              var val = params.value || '';
+              if (val.indexOf('\n') === -1 && val.length <= 45) return document.createTextNode(val);
+              var container = document.createElement('span');
+              var lines = val.split('\n');
+              for (var i = 0; i < lines.length; i++) {
+                  if (i > 0) container.appendChild(document.createElement('br'));
+                  var line = lines[i];
+                  if (line.length <= 45) {
+                      container.appendChild(document.createTextNode(line));
+                  } else {
+                      container.appendChild(document.createTextNode(line.substring(0, 45)));
+                      var over = document.createElement('span');
+                      over.style.color = 'red';
+                      over.textContent = line.substring(45);
+                      container.appendChild(over);
+                  }
+              }
+              return container;
+          },
           cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
         },
-        { headerName: 'Canvas City/St/Zip', colId: 'canvas_csz', valueGetter: canvasCszValueGetter, width: 160,
-          headerClass: 'ag-header-canvas' },
-        { headerName: 'Canvas ID', field: 'canvas_id', colId: 'canvas_id', valueGetter: canvasIdValueGetter, width: 100,
-          headerClass: 'ag-header-canvas', hide: true },
+        { headerName: 'Source City', field: 'source_city', colId: 'source_city', width: 100,
+          headerClass: 'ag-header-source', editable: true },
+        { headerName: 'Source St', field: 'source_state', colId: 'source_state', width: 50,
+          headerClass: 'ag-header-source', editable: true },
+        { headerName: 'Source Zip', field: 'source_zip', colId: 'source_zip', width: 70,
+          headerClass: 'ag-header-source', editable: true },
+        { headerName: 'Source Addr Recomend', field: 'source_address_recomend', colId: 'source_address_recomend', minWidth: 200, flex: 2,
+          headerClass: 'ag-header-source', editable: true,
+          autoHeight: true,
+          cellStyle: { 'white-space': 'pre-wrap', 'line-height': '1.3' },
+          cellEditor: 'agLargeTextCellEditor',
+          cellEditorParams: { maxLength: 500, rows: 5, cols: 50 },
+          cellEditorPopup: true,
+          headerTooltip: 'Shift+Enter(Return) to add new line.  Enter to confirm, Esc to cancel.',
+          cellRenderer: function(params) {
+              var val = params.value || '';
+              if (val.indexOf('\n') === -1 && val.length <= 45) return document.createTextNode(val);
+              var container = document.createElement('span');
+              var lines = val.split('\n');
+              for (var i = 0; i < lines.length; i++) {
+                  if (i > 0) container.appendChild(document.createElement('br'));
+                  var line = lines[i];
+                  if (line.length <= 45) {
+                      container.appendChild(document.createTextNode(line));
+                  } else {
+                      container.appendChild(document.createTextNode(line.substring(0, 45)));
+                      var over = document.createElement('span');
+                      over.style.color = 'red';
+                      over.textContent = line.substring(45);
+                      container.appendChild(over);
+                  }
+              }
+              return container;
+          },
+          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
+        },
+        { headerName: 'Source ID', field: 'source_id', colId: 'source_id', valueGetter: sourceIdValueGetter, width: 100,
+          headerClass: 'ag-header-source', hide: true },
         { headerName: 'DEC Name', field: 'dec_name', colId: 'dec_name', minWidth: 140, flex: 1,
           headerClass: 'ag-header-dec', wrapText: false,
           cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
@@ -376,6 +446,7 @@ function initGrid() {
         columnDefs: columnDefs,
         rowData: [],
         getRowId: function(params) { return String(params.data._row_id); },
+        stopEditingWhenCellsLoseFocus: true,
         defaultColDef: {
             sortable: true,
             resizable: true,
@@ -411,34 +482,17 @@ function initGrid() {
         },
         singleClickEdit: true,
         onCellValueChanged: function(params) {
-            if (params.colDef.field === 'how_to_process' && params.oldValue !== params.newValue && !window._bulkProcessUpdate) {
-                // Check if multiple Process cells are shift-selected
-                var selectedCells = $('.cell-selected[col-id="how_to_process"]');
-                if (selectedCells.length > 1) {
-                    var undoChanges = [];
-                    var chosen = params.newValue;
-                    window._bulkProcessUpdate = true;
-                    // Include the edited cell in undo
-                    undoChanges.push({ rowId: params.data._row_id, field: 'how_to_process', oldValue: params.oldValue || '', newValue: chosen });
-                    saveProcessValue(params.data._row_id, chosen);
-                    // Apply to other selected cells
-                    selectedCells.each(function() {
-                        var rowEl = $(this).closest('.ag-row');
-                        var rowId = rowEl.attr('row-id');
-                        var rowNode = gridApi.getRowNode(rowId);
-                        if (!rowNode || rowNode.data._row_id === params.data._row_id) return;
-                        var oldVal = rowNode.data.how_to_process || '';
-                        if (oldVal !== chosen) {
-                            undoChanges.push({ rowId: rowNode.data._row_id, field: 'how_to_process', oldValue: oldVal, newValue: chosen });
-                            rowNode.setDataValue('how_to_process', chosen);
-                            saveProcessValue(rowNode.data._row_id, chosen);
-                        }
+            var INLINE_TEXT_FIELDS = ['source_name', 'source_address_recomend', 'source_city', 'source_state', 'source_zip'];
+            if (INLINE_TEXT_FIELDS.indexOf(params.colDef.field) !== -1) {
+                if (params.oldValue !== params.newValue) {
+                    var fld = params.colDef.field;
+                    pushUndo({ type: 'single', changes: [{ rowId: params.data._row_id, field: fld, oldValue: params.oldValue || '', newValue: params.newValue || '' }] });
+                    $.ajax({
+                        url: '/api/update', method: 'POST', contentType: 'application/json',
+                        data: JSON.stringify({ row_id: params.data._row_id, field: fld, value: params.newValue || '' }),
+                        success: function(data) { pendingCount = data.pending_count || 0; updateSaveBtn(); },
+                        error: function() { showToast('Update failed', 'error'); }
                     });
-                    window._bulkProcessUpdate = false;
-                    pushUndo({ type: 'single', changes: undoChanges });
-                } else {
-                    pushUndo({ type: 'single', changes: [{ rowId: params.data._row_id, field: 'how_to_process', oldValue: params.oldValue || '', newValue: params.newValue }] });
-                    saveProcessValue(params.data._row_id, params.newValue);
                 }
             }
         },
@@ -466,8 +520,8 @@ function loadGridData() {
     fetch('/api/matches_all')
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            allRowData = data;
-            gridApi.setGridOption('rowData', data);
+            allRowData = prefillProcessField(data);
+            gridApi.setGridOption('rowData', allRowData);
             updateGridInfo();
         })
         .catch(function(err) {
@@ -480,8 +534,8 @@ function refreshGridData() {
     fetch('/api/matches_all')
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            allRowData = data;
-            gridApi.setGridOption('rowData', data);
+            allRowData = prefillProcessField(data);
+            gridApi.setGridOption('rowData', allRowData);
             updateGridInfo();
         });
 }
@@ -530,10 +584,10 @@ $(document).ready(function() {
         var reader = new FileReader();
         reader.onload = function(e) {
             var ids = e.target.result.split(/[\r\n,]+/).map(function(s) { return s.trim(); }).filter(function(s) { return s && s !== ''; });
-            if (ids.length === 0) { showToast('No Canvas IDs found in file', 'warning'); $('#importType').val(''); return; }
+            if (ids.length === 0) { showToast('No Source IDs found in file', 'warning'); $('#importType').val(''); return; }
             $.ajax({
                 url: '/api/import_ids', method: 'POST', contentType: 'application/json',
-                data: JSON.stringify({ field: field, canvas_ids: ids }),
+                data: JSON.stringify({ field: field, source_ids: ids }),
                 success: function(data) {
                     showToast(data.message, 'success');
                     pendingCount = data.pending_count || 0;
@@ -671,6 +725,49 @@ $(document).ready(function() {
         });
     }
 
+    // Process native <select> change handler (replaces agSelectCellEditor)
+    $('#matchesGrid').on('change', '.process-select', function() {
+        var $sel = $(this);
+        var rowId = parseInt($sel.data('row-id'));
+        var newValue = $sel.val();
+        var rowNode = null;
+
+        // Find the row node to get the old value
+        gridApi.forEachNode(function(node) {
+            if (node.data._row_id === rowId) rowNode = node;
+        });
+
+        var oldValue = rowNode ? (rowNode.data.how_to_process || '') : '';
+        if (oldValue === newValue) return;
+
+        // Check if multiple Process cells are shift-selected
+        var selectedCells = $('.cell-selected[col-id="how_to_process"]');
+        if (selectedCells.length > 1) {
+            var undoChanges = [];
+            // Include the changed cell
+            undoChanges.push({ rowId: rowId, field: 'how_to_process', oldValue: oldValue, newValue: newValue });
+            if (rowNode) rowNode.setDataValue('how_to_process', newValue);
+            saveProcessValue(rowId, newValue);
+            // Apply to other selected cells
+            selectedCells.each(function() {
+                var rowEl = $(this).closest('.ag-row');
+                var rId = rowEl.attr('row-id');
+                var node = gridApi.getRowNode(rId);
+                if (!node || node.data._row_id === rowId) return;
+                var oldVal = node.data.how_to_process || '';
+                if (oldVal !== newValue) {
+                    undoChanges.push({ rowId: node.data._row_id, field: 'how_to_process', oldValue: oldVal, newValue: newValue });
+                    node.setDataValue('how_to_process', newValue);
+                    saveProcessValue(node.data._row_id, newValue);
+                }
+            });
+            pushUndo({ type: 'single', changes: undoChanges });
+        } else {
+            pushUndo({ type: 'single', changes: [{ rowId: rowId, field: 'how_to_process', oldValue: oldValue, newValue: newValue }] });
+            if (rowNode) rowNode.setDataValue('how_to_process', newValue);
+            saveProcessValue(rowId, newValue);
+        }
+    });
 
     // Memo inline edit
     $('#matchesGrid').on('click', '.memo-text', function() {
@@ -707,46 +804,6 @@ $(document).ready(function() {
                 if (rowNode) gridApi.refreshCells({ rowNodes: [rowNode], columns: ['memo'], force: true });
             }
         });
-    });
-
-    // Right-click on Process column header → set all visible rows
-    $('#matchesGrid').on('contextmenu', '.ag-header-cell', function(e) {
-        var colId = $(this).attr('col-id');
-        if (colId !== 'how_to_process') return;
-        e.preventDefault();
-        $('.process-ctx-menu').remove();
-        var html = '<div class="process-ctx-menu" style="position:fixed;z-index:9999;background:#fff;border:1px solid #ccc;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.2);padding:4px 0;">';
-        PROCESS_OPTS.forEach(function(o) {
-            html += '<div class="process-ctx-item" style="padding:6px 16px;cursor:pointer;font-size:0.85rem;white-space:nowrap;" data-value="' + o + '">Update to: ' + o + '</div>';
-        });
-        html += '</div>';
-        var $menu = $(html);
-        $menu.css({ top: e.clientY + 'px', left: e.clientX + 'px' });
-        $('body').append($menu);
-        $menu.find('.process-ctx-item').hover(
-            function() { $(this).css('background', '#e9ecef'); },
-            function() { $(this).css('background', '#fff'); }
-        );
-        $menu.find('.process-ctx-item').on('click', function() {
-            var chosen = $(this).data('value');
-            $menu.remove();
-            var count = 0;
-            var undoChanges = [];
-            window._bulkProcessUpdate = true;
-            gridApi.forEachNodeAfterFilterAndSort(function(node) {
-                var oldVal = node.data.how_to_process || '';
-                if (oldVal !== chosen) {
-                    undoChanges.push({ rowId: node.data._row_id, field: 'how_to_process', oldValue: oldVal, newValue: chosen });
-                    node.setDataValue('how_to_process', chosen);
-                    saveProcessValue(node.data._row_id, chosen);
-                    count++;
-                }
-            });
-            window._bulkProcessUpdate = false;
-            if (undoChanges.length > 0) pushUndo({ type: 'bulk', changes: undoChanges });
-            showToast('Updated ' + count + ' rows to "' + chosen + '"');
-        });
-        $(document).one('click', function() { $menu.remove(); });
     });
 
     // Build column visibility dropdown
@@ -925,17 +982,34 @@ function updateSelectionInfo() {
     $('#bulkApproveBtn').prop('disabled', n === 0);
 }
 
+// ── Address line counter (45-char/line soft limit) ──
+function updateAddrLineCounters() {
+    var val = $('#editSourceAddress').val() || '';
+    var lines = val.split('\n');
+    var html = '';
+    for (var i = 0; i < lines.length; i++) {
+        var len = lines[i].length;
+        var over = len > 45;
+        var cls = over ? 'text-danger fw-bold' : 'text-success';
+        html += '<span class="' + cls + '">Line ' + (i + 1) + ': ' + len + '/45</span>';
+        if (i < lines.length - 1) html += ' &nbsp;|&nbsp; ';
+    }
+    $('#addrLineCounters').html(html);
+}
+
 // ── Edit modal ──
 function editRecord(rowId) {
     $.get('/api/record/' + rowId, function(d) {
         $('#editRowId').val(d._row_id);
-        $('#editCanvasName').val(d.canvas_name || '');
-        $('#editCanvasAddress').val(d.canvas_address || '');
-        $('#editCanvasCity').val(d.canvas_city || '');
-        $('#editCanvasState').val(d.canvas_state || '');
-        $('#editCanvasZip').val(d.canvas_zip || '');
-        $('#editCanvasId').text(d.canvas_addrseq ? (d.canvas_id + '-' + d.canvas_addrseq) : (d.canvas_id || ''));
-        $('#editCanvasSSN').text(d.canvas_ssn || '');
+        $('#editSourceName').val(d.source_name || '');
+        $('#editSourceAddress').val(d.source_address || '');
+        updateAddrLineCounters();
+        $('#editSourceAddress').off('input.addrcount').on('input.addrcount', updateAddrLineCounters);
+        $('#editSourceCity').val(d.source_city || '');
+        $('#editSourceState').val(d.source_state || '');
+        $('#editSourceZip').val(d.source_zip || '');
+        $('#editSourceId').text(d.source_addrseq ? (d.source_id + '-' + d.source_addrseq) : (d.source_id || ''));
+        $('#editSourceSSN').text(d.source_ssn || '');
         $('#editDecName').text(d.dec_name || '');
         $('#editDecAddress').text(d.dec_address || '');
         $('#editDecCity').text(d.dec_city || '');
@@ -966,11 +1040,11 @@ function setScoreBadgeEl(sel, val) {
 function saveRecord() {
     var rowId = parseInt($('#editRowId').val());
     var fields = {
-        'canvas_name': $('#editCanvasName').val(),
-        'canvas_address': $('#editCanvasAddress').val(),
-        'canvas_city': $('#editCanvasCity').val(),
-        'canvas_state': $('#editCanvasState').val(),
-        'canvas_zip': $('#editCanvasZip').val(),
+        'source_name': $('#editSourceName').val(),
+        'source_address_recomend': $('#editSourceAddress').val(),
+        'source_city': $('#editSourceCity').val(),
+        'source_state': $('#editSourceState').val(),
+        'source_zip': $('#editSourceZip').val(),
         'recommendation': $('#editRecommendation').val(),
         'address_reason': $('#editAddressReason').val(),
         'memo': $('#editMemo').val()
@@ -1131,7 +1205,7 @@ var srMatches = [];   // [{rowId, rowNode, col, value}, ...]
 var srMatchIdx = -1;  // current match index
 
 var SR_TEXT_COLS = [
-    'canvas_name', 'canvas_address', 'canvas_city', 'canvas_state', 'canvas_zip',
+    'source_name', 'source_address_recomend', 'source_city', 'source_state', 'source_zip',
     'recommendation', 'how_to_process', 'memo', 'address_reason'
 ];
 

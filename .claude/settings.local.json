@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "Bash(pip show:*)",
+      "Bash(python -c \":*)",
+      "Bash(python:*)",
+      "Bash(grep -v \"^$\")",
+      "Bash(taskkill:*)",
+      "Bash(git add:*)"
+    ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true
+  }
+}

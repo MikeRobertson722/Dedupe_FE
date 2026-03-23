@@ -1,20 +1,18 @@
-"""Tests for data source selector."""
+"""Tests for data source display."""
 import pytest
 from playwright.sync_api import Page, expect
 from helpers.selectors import *
 from helpers.api_helpers import api_get_datasources
 
 
-class TestDataSourceSelector:
+class TestDataSourceDisplay:
 
-    def test_dropdown_populated(self, app_page: Page):
-        ds = api_get_datasources()
-        options = app_page.locator(f"{DATASOURCE_SELECTOR} option")
-        # Should have at least as many options as configured sources
-        assert options.count() >= len(ds['datasources'])
+    def test_snowflake_label_in_navbar(self, app_page: Page):
+        """Datasource is shown as a static Snowflake label in the navbar."""
+        expect(app_page.locator("nav.navbar")).to_contain_text("Snowflake")
 
-    def test_active_source_selected(self, app_page: Page):
+    def test_api_returns_active_source(self, app_page: Page):
+        """The datasources API reports an active source."""
         ds = api_get_datasources()
-        active = ds['active']
-        selected = app_page.locator(DATASOURCE_SELECTOR).input_value()
-        assert selected == active
+        assert 'active' in ds
+        assert ds['active'] != ""

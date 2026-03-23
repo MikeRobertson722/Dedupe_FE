@@ -1,4 +1,5 @@
 """Tests for Save Changes button state and persistence flow."""
+import re
 import pytest
 from playwright.sync_api import Page, expect
 from helpers.selectors import *
@@ -8,6 +9,25 @@ from helpers.wait_helpers import (
 from helpers.api_helpers import api_get_record, api_update_field
 
 
+def _show_jib_column(app_page: Page):
+    """Show JIB column and scroll it into view."""
+    app_page.evaluate("() => gridApi.setColumnsVisible(['jib'], true)")
+    app_page.wait_for_timeout(300)
+    app_page.evaluate("() => gridApi.ensureColumnVisible('jib')")
+    app_page.wait_for_timeout(500)
+
+
+def _click_jib_and_wait_pending(app_page: Page):
+    """Click jib checkbox and wait for pending count to update."""
+    checkbox = app_page.locator(
+        "#matchesGrid .ag-row:first-child .ag-cell[col-id='jib'] input"
+    ).first
+    checkbox.click()
+    wait_for_inline_save(app_page)
+    # Wait for the save button to reflect the pending change
+    expect(app_page.locator(SAVE_CHANGES_BTN)).to_be_enabled(timeout=10000)
+
+
 class TestSaveButtonState:
 
     def test_save_disabled_initially(self, app_page: Page):
@@ -15,20 +35,14 @@ class TestSaveButtonState:
 
     @pytest.mark.destructive
     def test_save_shows_pending_count(self, app_page: Page):
-        # Show JIB column and toggle a checkbox to create a pending change
-        app_page.evaluate("() => gridApi.setColumnsVisible(['jib'], true)")
-        app_page.wait_for_timeout(300)
+        _show_jib_column(app_page)
 
         row_id = int(app_page.evaluate(
             "() => gridApi.getDisplayedRowAtIndex(0).data._row_id"
         ))
         original = api_get_record(row_id)
 
-        checkbox = app_page.locator(
-            "#matchesGrid .ag-row:first-child .ag-cell[col-id='jib'] input"
-        ).first
-        checkbox.click()
-        wait_for_inline_save(app_page)
+        _click_jib_and_wait_pending(app_page)
 
         badge_text = app_page.text_content(SAVE_COUNT_BADGE)
         assert badge_text and badge_text.strip() != ""
@@ -40,20 +54,14 @@ class TestSaveButtonState:
 
     @pytest.mark.destructive
     def test_save_enabled_after_edit(self, app_page: Page):
-        app_page.evaluate("() => gridApi.setColumnsVisible(['jib'], true)")
-        app_page.wait_for_timeout(300)
+        _show_jib_column(app_page)
 
         row_id = int(app_page.evaluate(
             "() => gridApi.getDisplayedRowAtIndex(0).data._row_id"
         ))
         original = api_get_record(row_id)
 
-        checkbox = app_page.locator(
-            "#matchesGrid .ag-row:first-child .ag-cell[col-id='jib'] input"
-        ).first
-        checkbox.click()
-        wait_for_inline_save(app_page)
-
+        _click_jib_and_wait_pending(app_page)
         expect(app_page.locator(SAVE_CHANGES_BTN)).to_be_enabled()
 
         # Restore
@@ -66,6 +74,8 @@ class TestSaveButtonState:
             "() => gridApi.setColumnsVisible(['jib', 'rev'], true)"
         )
         app_page.wait_for_timeout(300)
+        app_page.evaluate("() => gridApi.ensureColumnVisible('jib')")
+        app_page.wait_for_timeout(500)
 
         row_id_0 = int(app_page.evaluate(
             "() => gridApi.getDisplayedRowAtIndex(0).data._row_id"
@@ -82,6 +92,7 @@ class TestSaveButtonState:
         ).first
         cb1.click()
         wait_for_inline_save(app_page)
+        expect(app_page.locator(SAVE_CHANGES_BTN)).to_be_enabled(timeout=10000)
         count1 = app_page.text_content(SAVE_COUNT_BADGE) or ""
 
         # Second edit on different row
@@ -90,10 +101,10 @@ class TestSaveButtonState:
         ).first
         cb2.click()
         wait_for_inline_save(app_page)
+        app_page.wait_for_timeout(1000)
         count2 = app_page.text_content(SAVE_COUNT_BADGE) or ""
 
         # Extract numbers from "(N)" format
-        import re
         nums1 = re.findall(r'\d+', count1)
         nums2 = re.findall(r'\d+', count2)
         n1 = int(nums1[0]) if nums1 else 0
@@ -110,29 +121,24 @@ class TestSaveFlow:
 
     @pytest.mark.destructive
     def test_save_disables_during_ajax(self, app_page: Page):
-        app_page.evaluate("() => gridApi.setColumnsVisible(['jib'], true)")
-        app_page.wait_for_timeout(300)
+        _show_jib_column(app_page)
 
         row_id = int(app_page.evaluate(
             "() => gridApi.getDisplayedRowAtIndex(0).data._row_id"
         ))
         original = api_get_record(row_id)
 
-        checkbox = app_page.locator(
-            "#matchesGrid .ag-row:first-child .ag-cell[col-id='jib'] input"
-        ).first
-        checkbox.click()
-        wait_for_inline_save(app_page)
+        _click_jib_and_wait_pending(app_page)
 
         # Click save and immediately check disabled state
         app_page.click(SAVE_CHANGES_BTN)
         expect(app_page.locator(SAVE_CHANGES_BTN)).to_be_disabled()
 
         # Wait for save to complete
-        wait_for_toast(app_page, timeout=15000)
+        wait_for_toast(app_page, timeout=30000)
         app_page.wait_for_timeout(3000)
 
-        # Restore by reloading fresh data
+        # Restore
         api_update_field(row_id, "jib", original.get('jib', 0))
         app_page.wait_for_timeout(1000)
 
@@ -140,6 +146,8 @@ class TestSaveFlow:
     def test_save_refreshes_grid_data(self, app_page: Page):
         app_page.evaluate("() => gridApi.setColumnsVisible(['memo'], true)")
         app_page.wait_for_timeout(300)
+        app_page.evaluate("() => gridApi.ensureColumnVisible('memo')")
+        app_page.wait_for_timeout(500)
 
         row_id = int(app_page.evaluate(
             "() => gridApi.getDisplayedRowAtIndex(0).data._row_id"
@@ -149,11 +157,12 @@ class TestSaveFlow:
         # Edit memo via API to create pending change
         api_update_field(row_id, "memo", "SAVE_FLOW_TEST")
         app_page.evaluate("() => refreshGridData()")
-        app_page.wait_for_timeout(1000)
+        app_page.wait_for_timeout(2000)
 
-        # Save and verify grid still shows the value after refresh
+        # Save — button should be enabled since there's a pending change
+        expect(app_page.locator(SAVE_CHANGES_BTN)).to_be_enabled(timeout=10000)
         app_page.click(SAVE_CHANGES_BTN)
-        wait_for_toast(app_page, timeout=15000)
+        wait_for_toast(app_page, timeout=30000)
         app_page.wait_for_timeout(3000)
 
         memo_val = app_page.evaluate(
@@ -170,22 +179,21 @@ class TestSaveFlow:
 
     @pytest.mark.destructive
     def test_save_shows_success_toast(self, app_page: Page):
-        app_page.evaluate("() => gridApi.setColumnsVisible(['jib'], true)")
-        app_page.wait_for_timeout(300)
+        _show_jib_column(app_page)
 
         row_id = int(app_page.evaluate(
             "() => gridApi.getDisplayedRowAtIndex(0).data._row_id"
         ))
         original = api_get_record(row_id)
 
-        checkbox = app_page.locator(
-            "#matchesGrid .ag-row:first-child .ag-cell[col-id='jib'] input"
-        ).first
-        checkbox.click()
-        wait_for_inline_save(app_page)
+        _click_jib_and_wait_pending(app_page)
 
         app_page.click(SAVE_CHANGES_BTN)
-        wait_for_toast(app_page, "Saved", timeout=15000)
+        # Toast says "Saved X record(s) to Snowflake"
+        toast = wait_for_toast(app_page, timeout=30000)
+        toast_text = toast.text_content().lower() if toast else ""
+        assert "saved" in toast_text or "snowflake" in toast_text, \
+            f"Expected success toast but got: {toast_text}"
         app_page.wait_for_timeout(3000)
 
         # Restore

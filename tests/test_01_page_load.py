@@ -16,7 +16,7 @@ class TestPageLoad:
 
     @pytest.mark.smoke
     def test_page_title(self, app_page: Page):
-        expect(app_page).to_have_title("BA/Address Import -  Source: Canvas (Enertia) -> Target: DEC (Enertia)")
+        expect(app_page).to_have_title("BA/Address Import -  Source (Enertia) -> Target: DEC (Enertia)")
 
     def test_navbar_present(self, app_page: Page):
         expect(app_page.locator(NAVBAR)).to_be_visible()
@@ -35,30 +35,48 @@ class TestPageLoad:
     def test_recommendation_card_counts_match_api(self, app_page: Page):
         stats = api_get_stats()
         total_from_cards = 0
-        cards = app_page.locator(REC_CARD)
+        cards = app_page.locator(f"{REC_CARD} .rec-card")
         for i in range(cards.count()):
             card_text = cards.nth(i).text_content()
-            nums = re.findall(r'[\d,]+', card_text)
-            if nums:
-                total_from_cards += int(nums[0].replace(',', ''))
-        assert total_from_cards == stats['total_records']
+            # Card text is like "REC_NAME - 1,234 (5.6%)" or "ALL - 31,695"
+            # Extract the count after the dash, before the optional pct
+            m = re.search(r'-\s*([\d,]+)', card_text)
+            if m:
+                total_from_cards += int(m.group(1).replace(',', ''))
+        # Total should be the ALL card count + each rec count = 2x total,
+        # or we can just check per-rec cards sum to total
+        # The ALL card also has total_records, so sum of all cards = 2 * total
+        # Instead, check that the per-rec cards (excluding ALL) sum to total
+        per_rec_total = 0
+        all_card_count = 0
+        for i in range(cards.count()):
+            card_text = cards.nth(i).text_content()
+            m = re.search(r'-\s*([\d,]+)', card_text)
+            if m:
+                count = int(m.group(1).replace(',', ''))
+                if 'ALL' in card_text:
+                    all_card_count = count
+                else:
+                    per_rec_total += count
+        assert all_card_count == stats['total_records']
+        assert per_rec_total == stats['total_records']
 
     def test_ssn_filter_has_options(self, app_page: Page):
         options = app_page.locator(f"{SSN_FILTER} option")
         assert options.count() == 4  # All, Yes, Partial, No
 
-    def test_rec_filter_dropdown_built(self, app_page: Page):
-        app_page.click(REC_FILTER_BTN)
-        checkboxes = app_page.locator(REC_CHECKBOX)
-        assert checkboxes.count() >= 2
+    def test_rec_filter_uses_card_click(self, app_page: Page):
+        """Rec filtering is done via clickable rec cards, not a dropdown."""
+        cards = app_page.locator(f"{REC_CARD} .rec-card")
+        assert cards.count() >= 2
+        # Each non-ALL card has an onclick filterByRec
+        second_card = cards.nth(1)
+        onclick = second_card.get_attribute("onclick") or ""
+        assert "filterByRec" in onclick
 
-    def test_datasource_selector_populated(self, app_page: Page):
-        options = app_page.locator(f"{DATASOURCE_SELECTOR} option")
-        assert options.count() >= 2
-
-    def test_default_page_size_is_100(self, app_page: Page):
-        selected = app_page.locator(PAGE_SIZE_SELECT).input_value()
-        assert selected == "100"
+    def test_snowflake_label_present(self, app_page: Page):
+        """Snowflake is the data source, shown as a label in the navbar."""
+        expect(app_page.locator("nav.navbar")).to_contain_text("Snowflake")
 
     def test_grid_info_shows_record_count(self, app_page: Page):
         displayed, total = get_grid_info_counts(app_page)

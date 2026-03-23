@@ -58,14 +58,14 @@ Use the filter panel to narrow down records:
 The main table shows:
 - **Score Badges**: Color-coded scores (green=100, yellow=90+, orange=75+, red=<75)
 - **Recommendation Badges**: Current match recommendation status
-- **Canvas Data**: Source system information
+- **Source Data**: Source system information
 - **DEC Data**: Matched system information
 
 ### Editing Records
 
 1. Click the **Edit** button (pencil icon) on any row
 2. Modal dialog opens with:
-   - Canvas data (read-only)
+   - Source data (read-only)
    - DEC data (editable fields)
    - Match scores and recommendation
 3. Make changes and click **Save Changes**
@@ -89,13 +89,13 @@ Click **Export Current View** to download the currently filtered data as an Exce
 
 The application uses two main tables:
 
-### canvas_dec_matches
+### import_merge_matches
 Stores all match records with scores and recommendations.
 
 ### update_log (created automatically)
 Tracks all changes made through the interface:
-- canvas_id
-- canvas_ssn
+- source_id
+- source_ssn
 - field_name
 - old_value
 - new_value
@@ -105,9 +105,9 @@ Tracks all changes made through the interface:
 
 ### Match Record Fields
 
-**Canvas (Source)**:
-- canvas_name, canvas_address, canvas_city, canvas_state, canvas_zip
-- canvas_id, canvas_ssn
+**Source**:
+- source_name, source_address, source_city, source_state, source_zip
+- source_id, source_ssn
 
 **DEC (Match)**:
 - dec_hdrcode, dec_name, dec_address, dec_city, dec_state, dec_zip, dec_contact

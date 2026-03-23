@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BA/Address Import -  Source: Canvas (Enertia) -> Target: DEC (Enertia)</title>
+    <title>BA/Address Import -  Source (Enertia) -> Target: DEC (Enertia)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/ag-grid-community@32/styles/ag-grid.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/ag-grid-community@32/styles/ag-theme-alpine.css" rel="stylesheet">
@@ -14,7 +14,7 @@
     <nav class="navbar navbar-dark bg-dark flex-shrink-0">
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1">
-                <i class="fas fa-users-cog"></i> BA/Address Import -  Source: Canvas (Enertia) -> Target: DEC (Enertia)
+                <i class="fas fa-users-cog"></i> BA/Address Import -  Source (Enertia) -> Target: DEC (Enertia)
             </span>
             <div class="d-flex align-items-center gap-2">
                 <span class="text-light small">
@@ -142,33 +142,34 @@
                     <div class="row">
                         <div class="col-md-6">
                             <div class="card">
-                                <div class="card-header bg-primary text-white py-1">Canvas (Source) - Editable</div>
+                                <div class="card-header bg-primary text-white py-1">Source - Editable</div>
                                 <div class="card-body py-2">
                                     <div class="mb-2">
                                         <label class="form-label form-label-sm mb-0 fw-bold">Name</label>
-                                        <input type="text" class="form-control form-control-sm" id="editCanvasName">
+                                        <input type="text" class="form-control form-control-sm" id="editSourceName">
                                     </div>
                                     <div class="mb-2">
-                                        <label class="form-label form-label-sm mb-0 fw-bold">Address</label>
-                                        <input type="text" class="form-control form-control-sm" id="editCanvasAddress">
+                                        <label class="form-label form-label-sm mb-0 fw-bold">Address <span class="text-muted fw-normal" style="font-size:0.7rem;">(45 chars/line max)</span></label>
+                                        <textarea class="form-control form-control-sm" id="editSourceAddress" rows="3" style="resize:vertical; font-family:'Courier New',monospace; font-size:0.8rem;"></textarea>
+                                        <div id="addrLineCounters" class="mt-1" style="font-size:0.7rem;"></div>
                                     </div>
                                     <div class="row g-2 mb-2">
                                         <div class="col-5">
                                             <label class="form-label form-label-sm mb-0 fw-bold">City</label>
-                                            <input type="text" class="form-control form-control-sm" id="editCanvasCity">
+                                            <input type="text" class="form-control form-control-sm" id="editSourceCity">
                                         </div>
                                         <div class="col-3">
                                             <label class="form-label form-label-sm mb-0 fw-bold">State</label>
-                                            <input type="text" class="form-control form-control-sm" id="editCanvasState">
+                                            <input type="text" class="form-control form-control-sm" id="editSourceState">
                                         </div>
                                         <div class="col-4">
                                             <label class="form-label form-label-sm mb-0 fw-bold">Zip</label>
-                                            <input type="text" class="form-control form-control-sm" id="editCanvasZip">
+                                            <input type="text" class="form-control form-control-sm" id="editSourceZip">
                                         </div>
                                     </div>
                                     <table class="table table-sm table-borderless mb-0">
-                                        <tr><td class="fw-bold" style="width:80px">ID</td><td id="editCanvasId"></td></tr>
-                                        <tr><td class="fw-bold">SSN</td><td id="editCanvasSSN"></td></tr>
+                                        <tr><td class="fw-bold" style="width:80px">ID</td><td id="editSourceId"></td></tr>
+                                        <tr><td class="fw-bold">SSN</td><td id="editSourceSSN"></td></tr>
                                     </table>
                                 </div>
                             </div>
@@ -275,11 +276,11 @@
                             <label class="form-label form-label-sm mb-1 fw-bold">Column</label>
                             <select class="form-select form-select-sm" id="srColumn">
                                 <option value="all">All Columns</option>
-                                <option value="canvas_name">Canvas Name</option>
-                                <option value="canvas_address">Canvas Address</option>
-                                <option value="canvas_city">Canvas City</option>
-                                <option value="canvas_state">Canvas State</option>
-                                <option value="canvas_zip">Canvas Zip</option>
+                                <option value="source_name">Source Name</option>
+                                <option value="source_address_recomend">Source Addr Recomend</option>
+                                <option value="source_city">Source City</option>
+                                <option value="source_state">Source State</option>
+                                <option value="source_zip">Source Zip</option>
                                 <option value="recommendation">Recommendation</option>
                                 <option value="how_to_process">Process</option>
                                 <option value="memo">Memo</option>
@@ -332,7 +333,7 @@
                                         <li><strong>All changes are deferred</strong> &mdash; Edits to any field (recommendation, DEC fields, memo, process, BA type flags) are held in memory until Save is clicked.</li>
                                         <li><strong>Save Changes</strong> &mdash; Writes all pending changes to Snowflake in a single batch. The badge shows how many records have unsaved changes.</li>
                                         <li><strong>Refresh</strong> (<i class="fas fa-sync-alt"></i>) &mdash; Reloads data from Snowflake. Unsaved changes will be lost.</li>
-                                        <li><strong>Import</strong> &mdash; CSV/Excel files can still be imported for Canvas ID matching (JIB/Rev/Vendor flags).</li>
+                                        <li><strong>Import</strong> &mdash; CSV/Excel files can still be imported for Source ID matching (JIB/Rev/Vendor flags).</li>
                                         <li><strong>Dev Notes</strong> (<i class="fas fa-file-word"></i>) &mdash; Opens the development notes document in Word.</li>
                                     </ul>
                                 </div>
@@ -362,9 +363,9 @@
                                     <ul class="mb-0">
                                         <li><strong>Column sorting</strong> &mdash; Click any column header to sort ascending/descending (server-side).</li>
                                         <li><strong>Column reordering</strong> &mdash; Drag column headers to rearrange the table layout. The checkbox column (left) is fixed in place.</li>
-                                        <li><strong>Column resizing</strong> &mdash; Drag the right edge of any column header to adjust width. All data columns are resizable (SSN, scores, Status, Process, Canvas/DEC name/address/CSZ, Canvas ID, DEC Code). Minimum width is 50px.</li>
-                                        <li><strong>Show/Hide Columns</strong> &mdash; Dropdown to toggle visibility of any column. Columns are color-coded: <span style="background:#1e3a8a;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">Canvas</span> <span style="background:#9b4d6e;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">DEC</span> <span style="background:#212529;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">General</span></li>
-                                        <li><strong>Hidden by default</strong> &mdash; UID, Address Lookup, Canvas ID, DEC Code, JIB, Rev, Vendor, and Actions columns are hidden initially. Use Show/Hide Columns to reveal them.</li>
+                                        <li><strong>Column resizing</strong> &mdash; Drag the right edge of any column header to adjust width. All data columns are resizable (SSN, scores, Status, Process, Source/DEC name/address/CSZ, Source ID, DEC Code). Minimum width is 50px.</li>
+                                        <li><strong>Show/Hide Columns</strong> &mdash; Dropdown to toggle visibility of any column. Columns are color-coded: <span style="background:#1e3a8a;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">Source</span> <span style="background:#9b4d6e;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">DEC</span> <span style="background:#212529;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">General</span></li>
+                                        <li><strong>Hidden by default</strong> &mdash; UID, Address Lookup, Source ID, DEC Code, JIB, Rev, Vendor, and Actions columns are hidden initially. Use Show/Hide Columns to reveal them.</li>
                                         <li><strong>Sticky headers</strong> &mdash; Column headers stay visible when scrolling through table rows.</li>
                                     </ul>
                                 </div>
@@ -392,11 +393,10 @@
                             <div id="helpEdit" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Edit button</strong> (<i class="fas fa-edit"></i>) &mdash; Opens a side-by-side modal showing Canvas (read-only) vs DEC (editable) fields with match scores. Edit DEC name, address, city, state, zip, and recommendation.</li>
+                                        <li><strong>Edit button</strong> (<i class="fas fa-edit"></i>) &mdash; Opens a side-by-side modal showing Source (read-only) vs DEC (editable) fields with match scores. Edit DEC name, address, city, state, zip, and recommendation.</li>
                                         <li><strong>Quick Approve</strong> (<i class="fas fa-check"></i>) &mdash; Instantly sets a single record's recommendation to APPROVED without opening the edit modal.</li>
                                         <li><strong>Approve Selected</strong> &mdash; Bulk-approves all checkbox-selected rows in one action.</li>
                                         <li><strong>Process column</strong> &mdash; Click any Process cell to open a dropdown with options: "Add new BA and address", "Merge BA - add addr", "Merge BA and address", or "Manual Review -DNP". Defaults are auto-populated based on the recommendation status.</li>
-                                        <li><strong>Process right-click</strong> &mdash; Right-click the <strong>Process</strong> column header to set all visible rows to one option at once. Changes are saved immediately via deferred save.</li>
                                         <li><strong>JIB / Rev / Vendor checkboxes</strong> &mdash; Toggle BA type flags directly in the table. If multiple cells are selected in the column, the toggle applies to all selected rows at once.</li>
                                         <li><strong>Memo column</strong> &mdash; Click any Memo cell to type a free-text note. Saves automatically on Enter or when you click away. Press Escape to cancel. Also editable in the Edit modal.</li>
                                         <li><strong>Save Changes</strong> &mdash; Persists all pending changes (recommendations, DEC fields, memo, process, BA type flags) to Snowflake in one batch. The badge shows how many records have unsaved changes.</li>
@@ -410,7 +410,7 @@
                             <div id="helpImportExport" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Import Canvas IDs</strong> &mdash; Select JIB, Rev, or Vendor from the BA type dropdown, then pick a CSV/TXT file containing Canvas IDs (one per line) to bulk-set that flag.</li>
+                                        <li><strong>Import Source IDs</strong> &mdash; Select JIB, Rev, or Vendor from the BA type dropdown, then pick a CSV/TXT file containing Source IDs (one per line) to bulk-set that flag.</li>
                                         <li><strong>Export filtered</strong> &mdash; Downloads all currently filtered records as an Excel file (.xlsx) using the Export button in the toolbar.</li>
                                         <li><strong>Export selected</strong> (<i class="fas fa-download"></i>) &mdash; Downloads only checkbox-selected rows as Excel (.xlsx).</li>
                                     </ul>
@@ -423,7 +423,7 @@
                             <div id="helpVisual" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><span class="badge" style="background:#ffe0b2;color:#333;">Orange rows</span> &mdash; Canvas name or address contains "trust", "trst", or "tr".</li>
+                                        <li><span class="badge" style="background:#ffe0b2;color:#333;">Orange rows</span> &mdash; Source name or address contains "trust", "trst", or "tr".</li>
                                         <li><span class="badge" style="background:#f8d7da;color:#333;">Red cells</span> &mdash; Cell contains "DO NOT USE" (or variations: DON'T USE, DNU, etc.).</li>
                                         <li><strong>Score badges</strong> &mdash; <span class="badge bg-success">100</span> perfect, <span class="badge" style="background:#0d6efd;color:#fff;">90+</span> high, <span class="badge bg-warning text-dark">75+</span> medium, <span class="badge bg-danger">&lt;75</span> low.</li>
                                         <li><strong>Name score tooltip</strong> &mdash; Hover over a Name Score below 45 to see a tooltip explaining the low score may be because the name exists in the address field.</li>

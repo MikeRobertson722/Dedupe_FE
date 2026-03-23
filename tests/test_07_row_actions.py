@@ -26,22 +26,24 @@ class TestEditModal:
         wait_for_modal_visible(app_page, EDIT_MODAL)
         expect(app_page.locator(EDIT_MODAL)).to_be_visible()
 
-    def test_canvas_section_is_readonly(self, app_page: Page):
+    def test_source_section_is_editable(self, app_page: Page):
+        """Source section is now the editable side (input fields)."""
         self._show_actions_column(app_page)
         app_page.locator("#matchesGrid .ag-row:first-child .btn-outline-primary").first.click()
         wait_for_modal_visible(app_page, EDIT_MODAL)
-        canvas_name = app_page.locator(EDIT_CANVAS_NAME)
-        expect(canvas_name).to_be_visible()
-        tag = canvas_name.evaluate("el => el.tagName")
-        assert tag.lower() == "td"
+        source_name = app_page.locator(EDIT_SOURCE_NAME)
+        expect(source_name).to_be_visible()
+        expect(source_name).to_be_editable()
 
-    def test_dec_fields_are_editable(self, app_page: Page):
+    def test_dec_fields_are_readonly(self, app_page: Page):
+        """DEC section is now the read-only side (td elements)."""
         self._show_actions_column(app_page)
         app_page.locator("#matchesGrid .ag-row:first-child .btn-outline-primary").first.click()
         wait_for_modal_visible(app_page, EDIT_MODAL)
         dec_name = app_page.locator(EDIT_DEC_NAME)
         expect(dec_name).to_be_visible()
-        expect(dec_name).to_be_editable()
+        tag = dec_name.evaluate("el => el.tagName")
+        assert tag.lower() == "td"
 
     def test_modal_shows_scores(self, app_page: Page):
         self._show_actions_column(app_page)
@@ -67,16 +69,17 @@ class TestEditModal:
         row_id = int(app_page.locator(EDIT_ROW_ID).input_value())
         original = api_get_record(row_id)
 
-        app_page.fill(EDIT_DEC_NAME, "TEST_REGRESSION_NAME")
+        # Source name is now the editable field
+        app_page.fill(EDIT_SOURCE_NAME, "TEST_REGRESSION_NAME")
         app_page.click(EDIT_SAVE_BTN)
         wait_for_toast(app_page, timeout=10000)
         app_page.wait_for_timeout(3000)
 
         updated = api_get_record(row_id)
-        assert updated['dec_name'] == "TEST_REGRESSION_NAME"
+        assert updated['source_name'] == "TEST_REGRESSION_NAME"
 
         # Restore
-        api_update_field(row_id, "dec_name", original.get('dec_name', ''))
+        api_update_field(row_id, "source_name", original.get('source_name', ''))
         app_page.wait_for_timeout(3000)
 
 
