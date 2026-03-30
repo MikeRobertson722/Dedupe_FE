@@ -21,7 +21,8 @@ const REC_ORDER = [
     'EXISTING BA ADD NEW ADDRESS',
     'EXISTING BA AND EXISTING ADDRESS',
     'NEEDS REVIEW',
-    'PROCESSED'
+    'PROCESSED',
+    'STAGED'
 ];
 
 // Color map for recommendation badges
@@ -30,10 +31,18 @@ const REC_COLORS = {
     'EXISTING BA ADD NEW ADDRESS': '#fd7e14',
     'EXISTING BA AND EXISTING ADDRESS': '#28a745',
     'NEEDS REVIEW': '#ffc107',
-    'PROCESSED': '#0d6efd'
+    'PROCESSED': '#0d6efd',
+    'STAGED': '#6610f2'
 };
 
 const PROCESS_OPTS = ['Add new BA and address', 'Add address to existing BA', 'Merge BA and address', 'Manual Review - DNP'];
+
+function isStaged(params) {
+    return params.data && (params.data.recommendation || '').toUpperCase() === 'STAGED';
+}
+function notStagedEditable(params) {
+    return !isStaged(params);
+}
 
 function sortByRecOrder(items) {
     return items.sort(function(a, b) {
@@ -104,11 +113,13 @@ const COL_DEFS = [
     ['N+A', '#212529', 'nameaddrscore', false],
     ['Status', '#212529', 'recommendation'],
     ['Process', '#212529', 'how_to_process'],
-    ['Source Name', '#1e3a8a', 'source_name'],
-    ['Source Addr', '#1e3a8a', 'source_address'],
-    ['Source City/St/Zip', '#1e3a8a', 'source_csz'],
-    ['Source Addr Recomend', '#1e3a8a', 'source_address_recomend'],
-    ['Source ID', '#1e3a8a', 'source_id', false],
+    ['Src Name', '#1e3a8a', 'source_name'],
+    ['Src Addr', '#1e3a8a', 'source_address'],
+    ['Src City/St/Zip', '#1e3a8a', 'source_csz'],
+    ['Src Addr Recomend', '#1e3a8a', 'source_address_recomend'],
+    ['Src SSN', '#1e3a8a', 'source_ssn'],
+    ['Src ID', '#1e3a8a', 'source_id', false],
+    ['DEC SSN', '#9b4d6e', 'dec_ssn'],
     ['DEC Name', '#9b4d6e', 'dec_name'],
     ['DEC Addr', '#9b4d6e', 'dec_address'],
     ['DEC City/St/Zip', '#9b4d6e', 'dec_csz'],
@@ -165,17 +176,15 @@ function toggleAllCols(show) {
 
 // ── External filter state ──
 function isExternalFilterPresent() {
-    if (activeRecFilter) return true;
-    if ($('#ssnFilter').val()) return true;
-    if ($('#minNameScore').val()) return true;
-    if ($('#maxNameScore').val()) return true;
-    if ($('#minAddrScore').val()) return true;
-    if ($('#maxAddrScore').val()) return true;
-    return false;
+    // Always present because STAGED records are hidden by default
+    return true;
 }
 
 function doesExternalFilterPass(node) {
     var data = node.data;
+
+    // Hide STAGED records unless user explicitly filters to STAGED
+    if (activeRecFilter !== 'STAGED' && (data.recommendation || '').toUpperCase() === 'STAGED') return false;
 
     // Recommendation filter
     if (activeRecFilter && data.recommendation !== activeRecFilter) return false;
@@ -260,7 +269,8 @@ function prefillProcessField(rows) {
 
 function processCellRenderer(params) {
     var val = params.value || '';
-    var html = '<select class="process-select" data-row-id="' + params.data._row_id + '" style="width:100%;border:none;background:transparent;font-size:0.75rem;cursor:pointer;padding:0 2px;">';
+    var disabled = isStaged(params) ? ' disabled' : '';
+    var html = '<select class="process-select" data-row-id="' + params.data._row_id + '" style="width:100%;border:none;background:transparent;font-size:0.75rem;cursor:pointer;padding:0 2px;"' + disabled + '>';
     html += '<option value=""' + (val === '' ? ' selected' : '') + '></option>';
     for (var i = 0; i < PROCESS_OPTS.length; i++) {
         var opt = PROCESS_OPTS[i];
@@ -272,7 +282,8 @@ function processCellRenderer(params) {
 
 function checkboxCellRenderer(params) {
     var checked = params.value ? 'checked' : '';
-    return '<input type="checkbox" class="field-check" data-row-id="' + params.data._row_id + '" data-field="' + params.colDef.field + '" ' + checked + '>';
+    var disabled = isStaged(params) ? ' disabled' : '';
+    return '<input type="checkbox" class="field-check" data-row-id="' + params.data._row_id + '" data-field="' + params.colDef.field + '" ' + checked + disabled + '>';
 }
 
 function addressLookupCellRenderer(params) {
@@ -283,13 +294,18 @@ function addressLookupCellRenderer(params) {
 function memoCellRenderer(params) {
     var val = params.value || '';
     var escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    if (isStaged(params)) {
+        return '<span style="font-size:0.75rem;">' + escaped + '</span>';
+    }
     return '<span class="memo-text" data-row-id="' + params.data._row_id + '" style="font-size:0.75rem;cursor:pointer;" title="Click to edit">' + escaped + '</span>';
 }
 
 function actionsCellRenderer(params) {
     var rid = params.data._row_id;
-    return '<button class="btn btn-sm btn-outline-primary py-0 px-1" onclick="editRecord(' + rid + ')" title="Edit"><i class="fas fa-edit"></i></button> ' +
-           '<button class="btn btn-sm btn-outline-success py-0 px-1" onclick="quickApprove(' + rid + ')" title="Approve"><i class="fas fa-check"></i></button>';
+    var staged = isStaged(params);
+    var editBtn = '<button class="btn btn-sm btn-outline-primary py-0 px-1" onclick="editRecord(' + rid + ')" title="Edit"><i class="fas fa-edit"></i></button> ';
+    var approveBtn = staged ? '' : '<button class="btn btn-sm btn-outline-success py-0 px-1" onclick="quickApprove(' + rid + ')" title="Approve"><i class="fas fa-check"></i></button>';
+    return editBtn + approveBtn;
 }
 
 function sourceIdValueGetter(params) {
@@ -347,11 +363,11 @@ function initGrid() {
           cellRenderer: processCellRenderer,
           cellStyle: { padding: '0 4px' }
         },
-        { headerName: 'Source Name', field: 'source_name', colId: 'source_name', minWidth: 140, flex: 1,
-          headerClass: 'ag-header-source', wrapText: false, editable: true,
+        { headerName: 'Src Name', field: 'source_name', colId: 'source_name', minWidth: 140, flex: 1,
+          headerClass: 'ag-header-source', wrapText: false, editable: notStagedEditable,
           cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
         },
-        { headerName: 'Source Addr', field: 'source_address', colId: 'source_address', minWidth: 200, flex: 2,
+        { headerName: 'Src Addr', field: 'source_address', colId: 'source_address', minWidth: 200, flex: 2,
           headerClass: 'ag-header-source',
           autoHeight: true,
           cellStyle: { 'white-space': 'pre-wrap', 'line-height': '1.3' },
@@ -377,14 +393,14 @@ function initGrid() {
           },
           cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
         },
-        { headerName: 'Source City', field: 'source_city', colId: 'source_city', width: 100,
-          headerClass: 'ag-header-source', editable: true },
-        { headerName: 'Source St', field: 'source_state', colId: 'source_state', width: 50,
-          headerClass: 'ag-header-source', editable: true },
-        { headerName: 'Source Zip', field: 'source_zip', colId: 'source_zip', width: 70,
-          headerClass: 'ag-header-source', editable: true },
-        { headerName: 'Source Addr Recomend', field: 'source_address_recomend', colId: 'source_address_recomend', minWidth: 200, flex: 2,
-          headerClass: 'ag-header-source', editable: true,
+        { headerName: 'Src City', field: 'source_city', colId: 'source_city', width: 100,
+          headerClass: 'ag-header-source', editable: notStagedEditable },
+        { headerName: 'Src St', field: 'source_state', colId: 'source_state', width: 50,
+          headerClass: 'ag-header-source', editable: notStagedEditable },
+        { headerName: 'Src Zip', field: 'source_zip', colId: 'source_zip', width: 70,
+          headerClass: 'ag-header-source', editable: notStagedEditable },
+        { headerName: 'Src Addr Recomend', field: 'source_address_recomend', colId: 'source_address_recomend', minWidth: 200, flex: 2,
+          headerClass: 'ag-header-source', editable: notStagedEditable,
           autoHeight: true,
           cellStyle: { 'white-space': 'pre-wrap', 'line-height': '1.3' },
           cellEditor: 'agLargeTextCellEditor',
@@ -413,8 +429,12 @@ function initGrid() {
           },
           cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
         },
-        { headerName: 'Source ID', field: 'source_id', colId: 'source_id', valueGetter: sourceIdValueGetter, width: 100,
+        { headerName: 'Src SSN', field: 'source_ssn', colId: 'source_ssn', width: 100,
+          headerClass: 'ag-header-source' },
+        { headerName: 'Src ID', field: 'source_id', colId: 'source_id', valueGetter: sourceIdValueGetter, width: 100,
           headerClass: 'ag-header-source', hide: true },
+        { headerName: 'DEC SSN', field: 'dec_ssn', colId: 'dec_ssn', width: 100,
+          headerClass: 'ag-header-dec' },
         { headerName: 'DEC Name', field: 'dec_name', colId: 'dec_name', minWidth: 140, flex: 1,
           headerClass: 'ag-header-dec', wrapText: false,
           cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
@@ -550,8 +570,10 @@ $(document).ready(function() {
             $('#editRecommendation').append('<option value="' + r + '">' + r + '</option>');
         });
         $('#editRecommendation').append('<option value="PROCESSED">PROCESSED</option>');
+        $('#editRecommendation').append('<option value="STAGED">STAGED</option>');
         initGrid();
         loadStats();
+        loadStagingCount();
     });
 
     // Filter dropdowns trigger external filter
@@ -602,26 +624,41 @@ $(document).ready(function() {
     });
 
     // Cell selection + inline editing via event delegation on grid div
+    // Store row-index (AG Grid's virtual row index) so selection survives scrolling
     var lastClickedCell = null;
     $('#matchesGrid').on('click', '.ag-cell', function(e) {
-        if ($(e.target).is('input, button, i, a, select')) return;
+        var isSelect = $(e.target).is('select, option');
+        // Allow select (Process dropdown) through for cell selection, skip other interactive elements
+        if ($(e.target).is('input, button, i, a')) return;
+        if (isSelect && !e.shiftKey) {
+            // Plain click of a Process select: track as lastClickedCell but don't clear existing selection
+            var selTd = $(this);
+            var selRowIdx = parseInt(selTd.closest('.ag-row').attr('row-index'));
+            lastClickedCell = { colId: selTd.attr('col-id'), rowIndex: selRowIdx };
+            return;
+        }
         var td = $(this);
         var colId = td.attr('col-id');
+        var clickedRowIndex = parseInt(td.closest('.ag-row').attr('row-index'));
 
         if (e.shiftKey && lastClickedCell) {
-            var rows = $('#matchesGrid .ag-row');
-            var startRow = rows.index(lastClickedCell.row);
-            var endRow = rows.index(td.closest('.ag-row'));
-            var lo = Math.min(startRow, endRow);
-            var hi = Math.max(startRow, endRow);
+            var lo = Math.min(lastClickedCell.rowIndex, clickedRowIndex);
+            var hi = Math.max(lastClickedCell.rowIndex, clickedRowIndex);
             $('.cell-selected').removeClass('cell-selected');
 
             if (lastClickedCell.colId === colId) {
-                rows.slice(lo, hi + 1).each(function() {
-                    $(this).find('.ag-cell[col-id="' + colId + '"]').addClass('cell-selected');
+                // Store the selection range for Process multi-update (works with off-screen rows)
+                processSelectionRange = { colId: colId, lo: lo, hi: hi };
+                // Select all rendered cells in the range by row-index
+                $('#matchesGrid .ag-row').each(function() {
+                    var idx = parseInt($(this).attr('row-index'));
+                    if (idx >= lo && idx <= hi) {
+                        $(this).find('.ag-cell[col-id="' + colId + '"]').addClass('cell-selected');
+                    }
                 });
                 window.getSelection().removeAllRanges();
             } else {
+                processSelectionRange = null;
                 td.closest('.ag-row').find('.ag-cell').addClass('cell-selected');
                 var sel = window.getSelection();
                 sel.removeAllRanges();
@@ -630,16 +667,18 @@ $(document).ready(function() {
                 sel.addRange(range);
             }
         } else {
+            processSelectionRange = null;
             $('.cell-selected').removeClass('cell-selected');
             td.addClass('cell-selected');
-            lastClickedCell = { colId: colId, row: td.closest('.ag-row')[0] };
+            lastClickedCell = { colId: colId, rowIndex: clickedRowIndex };
         }
     });
 
-    // Click outside grid clears cell selection
+    // Click outside grid clears cell selection and process range
     $(document).on('click', function(e) {
         if (!$(e.target).closest('#matchesGrid .ag-body-viewport').length) {
             $('.cell-selected').removeClass('cell-selected');
+            processSelectionRange = null;
         }
     });
 
@@ -715,7 +754,7 @@ $(document).ready(function() {
         }
     });
 
-    // Process inline dropdown
+    // Process inline dropdown — single record update
     function saveProcessValue(rowId, value) {
         $.ajax({
             url: '/api/update', method: 'POST', contentType: 'application/json',
@@ -724,6 +763,19 @@ $(document).ready(function() {
             error: function() { showToast('Update failed', 'error'); }
         });
     }
+
+    // Process bulk update — single request for many rows
+    function bulkSaveProcessValues(rowIds, value) {
+        $.ajax({
+            url: '/api/bulk_field_update', method: 'POST', contentType: 'application/json',
+            data: JSON.stringify({ row_ids: rowIds, field: 'how_to_process', value: value }),
+            success: function(data) { pendingCount = data.pending_count || 0; updateSaveBtn(); },
+            error: function() { showToast('Bulk update failed', 'error'); }
+        });
+    }
+
+    // Track the selected Process range (row indices) so changes apply to off-screen rows too
+    var processSelectionRange = null;  // { colId, lo, hi } when a shift-select range is active
 
     // Process native <select> change handler (replaces agSelectCellEditor)
     $('#matchesGrid').on('change', '.process-select', function() {
@@ -740,28 +792,27 @@ $(document).ready(function() {
         var oldValue = rowNode ? (rowNode.data.how_to_process || '') : '';
         if (oldValue === newValue) return;
 
-        // Check if multiple Process cells are shift-selected
-        var selectedCells = $('.cell-selected[col-id="how_to_process"]');
-        if (selectedCells.length > 1) {
+        // Check if a multi-cell range is active (use stored range, not just DOM)
+        var hasRange = processSelectionRange && processSelectionRange.colId === 'how_to_process' &&
+                       (processSelectionRange.hi - processSelectionRange.lo) > 0;
+        if (hasRange) {
             var undoChanges = [];
-            // Include the changed cell
-            undoChanges.push({ rowId: rowId, field: 'how_to_process', oldValue: oldValue, newValue: newValue });
-            if (rowNode) rowNode.setDataValue('how_to_process', newValue);
-            saveProcessValue(rowId, newValue);
-            // Apply to other selected cells
-            selectedCells.each(function() {
-                var rowEl = $(this).closest('.ag-row');
-                var rId = rowEl.attr('row-id');
-                var node = gridApi.getRowNode(rId);
-                if (!node || node.data._row_id === rowId) return;
+            var bulkRowIds = [];
+            var lo = processSelectionRange.lo;
+            var hi = processSelectionRange.hi;
+            // Iterate through ALL rows in the range via AG Grid API (not DOM)
+            for (var i = lo; i <= hi; i++) {
+                var node = gridApi.getDisplayedRowAtIndex(i);
+                if (!node || !node.data) continue;
                 var oldVal = node.data.how_to_process || '';
                 if (oldVal !== newValue) {
                     undoChanges.push({ rowId: node.data._row_id, field: 'how_to_process', oldValue: oldVal, newValue: newValue });
                     node.setDataValue('how_to_process', newValue);
-                    saveProcessValue(node.data._row_id, newValue);
+                    bulkRowIds.push(node.data._row_id);
                 }
-            });
-            pushUndo({ type: 'single', changes: undoChanges });
+            }
+            if (undoChanges.length > 0) pushUndo({ type: 'single', changes: undoChanges });
+            if (bulkRowIds.length > 0) bulkSaveProcessValues(bulkRowIds, newValue);
         } else {
             pushUndo({ type: 'single', changes: [{ rowId: rowId, field: 'how_to_process', oldValue: oldValue, newValue: newValue }] });
             if (rowNode) rowNode.setDataValue('how_to_process', newValue);
@@ -1023,6 +1074,10 @@ function editRecord(rowId) {
         $('#editRecommendation').val(d.recommendation || '');
         $('#editAddressReason').val(d.address_reason || '');
         $('#editMemo').val(d.memo || '');
+        // Disable editing for STAGED records
+        var staged = (d.recommendation || '').toUpperCase() === 'STAGED';
+        $('#editModal .modal-body input, #editModal .modal-body textarea, #editModal .modal-body select').prop('disabled', staged);
+        $('#editModal .btn-primary').prop('disabled', staged);
         editModal.show();
     });
 }
@@ -1175,6 +1230,7 @@ function saveChanges() {
             updateSaveBtn();
             refreshGridData();
             loadStats();
+            loadStagingCount();
             showToast(data.message, 'success');
         },
         error: function(xhr) {
@@ -1188,6 +1244,55 @@ function updateSaveBtn() {
     var btn = $('#saveChangesBtn');
     btn.prop('disabled', pendingCount === 0);
     btn.find('.save-count').text(pendingCount > 0 ? ' (' + pendingCount + ')' : '');
+}
+
+// ── Staging ──
+var stagingCount = 0;
+
+function loadStagingCount() {
+    $.get('/api/staging_count', function(data) {
+        stagingCount = data.count || 0;
+        updateStagingBtn();
+    });
+}
+
+function updateStagingBtn() {
+    var btn = $('#stageApprovedBtn');
+    btn.prop('disabled', stagingCount === 0);
+    btn.find('.stage-count').text(stagingCount > 0 ? ' (' + stagingCount + ')' : '');
+}
+
+function stageApproved() {
+    if (pendingCount > 0) {
+        showToast('Save your pending changes before staging', 'warning');
+        return;
+    }
+    if (stagingCount === 0) {
+        showToast('No eligible records to stage', 'info');
+        return;
+    }
+    showConfirm(
+        'Stage Approved Records',
+        'Move <strong>' + stagingCount + '</strong> approved record(s) to the staging table?<br>Their status will change to <strong>STAGED</strong> and they will be hidden from the default view.',
+        function() {
+            var btn = $('#stageApprovedBtn');
+            btn.prop('disabled', true);
+            $.ajax({
+                url: '/api/stage_approved', method: 'POST', contentType: 'application/json',
+                data: JSON.stringify({}),
+                success: function(data) {
+                    showToast(data.message, 'success');
+                    refreshGridData();
+                    loadStats();
+                    loadStagingCount();
+                },
+                error: function(xhr) {
+                    showToast(xhr.responseJSON ? xhr.responseJSON.error : 'Staging failed', 'error');
+                    updateStagingBtn();
+                }
+            });
+        }
+    );
 }
 
 // ── Toast ──

@@ -241,6 +241,27 @@ def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
     except Exception as e:
         print(f"  UPDATE_LOG column rename skipped: {e}")
 
+    # Ensure IMPORT_MERGE_STAGING table exists (mirrors source + metadata)
+    staging_table = table.replace('MATCHES', 'STAGING')
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {staging_table} LIKE {table}
+    """)
+    # Add staging metadata columns if missing
+    cursor.execute(f"DESCRIBE TABLE {staging_table}")
+    staging_cols = {row[0].lower() for row in cursor.fetchall()}
+    staging_meta = {
+        'STAGED_AT': 'TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()',
+        'STAGED_BY': 'VARCHAR',
+        'SOURCE_TABLE': f"VARCHAR DEFAULT '{table}'",
+    }
+    for col, col_type in staging_meta.items():
+        if col.lower() not in staging_cols:
+            try:
+                cursor.execute(f"ALTER TABLE {staging_table} ADD COLUMN {col} {col_type}")
+                print(f"  Added {col} to {staging_table}")
+            except Exception as e:
+                print(f"  Adding {col} to {staging_table} skipped: {e}")
+
     conn.commit()
 
 
@@ -364,6 +385,99 @@ def read_audit_log_from_snowflake(config: Dict[str, Any], limit: int = 100) -> l
     rows = cursor.fetchall()
     # Lowercase keys for consistency with frontend expectations
     return [{k.lower(): v for k, v in row.items()} for row in rows]
+
+
+def count_staging_eligible(df: pd.DataFrame) -> int:
+    """Count records eligible for staging (APPROVED with a Process value set)."""
+    mask = (
+        (df['recommendation'].fillna('').str.upper() == 'APPROVED') &
+        (df['how_to_process'].fillna('').str.strip() != '')
+    )
+    return int(mask.sum())
+
+
+def stage_approved_records(config: Dict[str, Any], df: pd.DataFrame) -> int:
+    """
+    Copy eligible records to IMPORT_MERGE_STAGING and flag them as STAGED
+    in the source table, all within a single transaction.
+
+    Returns the number of records staged.
+    """
+    table = config.get('table', 'import_merge_matches').upper()
+    staging_table = table.replace('MATCHES', 'STAGING')
+
+    # Identify eligible rows from the DataFrame
+    mask = (
+        (df['recommendation'].str.upper() == 'APPROVED') &
+        (df['how_to_process'].fillna('').str.strip() != '')
+    )
+    eligible = df[mask]
+    if eligible.empty:
+        return 0
+
+    # Build WHERE clause using source_id + source_ssn pairs
+    pairs = list(zip(
+        eligible['source_id'].astype(str),
+        eligible['source_ssn'].astype(str)
+    ))
+    pair_placeholders = ', '.join(['(%s, %s)'] * len(pairs))
+    pair_params = [v for pair in pairs for v in pair]
+
+    eligibility_where = (
+        f"(SOURCE_ID, SOURCE_SSN) IN ({pair_placeholders}) "
+        f"AND UPPER(RECOMMENDATION) = 'APPROVED' "
+        f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != ''"
+    )
+
+    conn = get_snowflake_connection(config)
+    cursor = conn.cursor()
+
+    try:
+        # Get source table columns
+        cursor.execute(f"DESCRIBE TABLE {table}")
+        source_cols = [row[0] for row in cursor.fetchall()]
+
+        # Check which columns exist on the staging table
+        cursor.execute(f"DESCRIBE TABLE {staging_table}")
+        staging_cols = {row[0].upper() for row in cursor.fetchall()}
+
+        # Only copy columns that exist in BOTH tables
+        common_cols = [c for c in source_cols if c.upper() in staging_cols]
+        cols_csv = ', '.join(common_cols)
+
+        meta_cols = []
+        meta_vals = []
+        for col, val in [('STAGED_AT', 'CURRENT_TIMESTAMP()'), ('STAGED_BY', 'CURRENT_USER()')]:
+            if col in staging_cols:
+                meta_cols.append(col)
+                meta_vals.append(val)
+
+        # Build INSERT with common columns + whatever metadata columns exist
+        insert_cols = cols_csv + (', ' + ', '.join(meta_cols) if meta_cols else '')
+        select_cols = cols_csv + (', ' + ', '.join(meta_vals) if meta_vals else '')
+
+        # INSERT into staging (copy source columns + set metadata)
+        cursor.execute(
+            f"INSERT INTO {staging_table} ({insert_cols}) "
+            f"SELECT {select_cols} "
+            f"FROM {table} WHERE {eligibility_where}",
+            pair_params
+        )
+        staged_count = cursor.rowcount
+
+        # UPDATE source: flag as STAGED
+        cursor.execute(
+            f"UPDATE {table} SET RECOMMENDATION = 'STAGED' "
+            f"WHERE {eligibility_where}",
+            pair_params
+        )
+
+        conn.commit()
+        return staged_count
+
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def load_data(config: Dict[str, Any]) -> pd.DataFrame:

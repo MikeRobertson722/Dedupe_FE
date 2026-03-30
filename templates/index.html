@@ -114,6 +114,9 @@
                 <button class="btn btn-outline-info btn-sm" onclick="exportSelected()" title="Download selected as CSV">
                     <i class="fas fa-download"></i> Download Selected
                 </button>
+                <button class="btn btn-warning btn-sm" id="stageApprovedBtn" onclick="stageApproved()" disabled title="Move all approved records with a Process value to the staging table">
+                    <i class="fas fa-paper-plane"></i> Stage Approved<span class="stage-count"></span>
+                </button>
                 <button class="btn btn-success btn-sm" id="saveChangesBtn" onclick="saveChanges()" disabled>
                     <i class="fas fa-save"></i> Save Changes<span class="save-count"></span>
                 </button>

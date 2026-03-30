@@ -7,7 +7,18 @@
       "Bash(python:*)",
       "Bash(grep -v \"^$\")",
       "Bash(taskkill:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git tag:*)",
+      "Bash(git push:*)",
+      "Bash(claude:*)",
+      "Bash(pip install:*)",
+      "Bash(git -C /c/ClaudeMain/BA_Review_App branch -a)",
+      "Bash(git -C /c/ClaudeMain/BA_Review_App rev-list --count HEAD)",
+      "Bash(git -C /c/ClaudeMain/BA_Review_App config --local -l)",
+      "Bash(git -C /c/ClaudeMain/BA_Review_App remote -v)",
+      "Bash(git -C /c/ClaudeMain/BA_Review_App config --file .gitmodules --name-only --get-regexp path)",
+      "Bash(git -C /c/ClaudeMain/BA_Review_App log --all --oneline)"
     ]
   },
   "enabledPlugins": {

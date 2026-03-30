@@ -16,7 +16,7 @@ load_dotenv(Path(__file__).parent / '.env')
 from data_loader import (
     load_data, get_snowflake_connection, merge_changes_to_snowflake,
     write_audit_log_to_snowflake, read_audit_log_from_snowflake,
-    ensure_snowflake_schema
+    ensure_snowflake_schema, count_staging_eligible, stage_approved_records
 )
 
 app = Flask(__name__)
@@ -216,7 +216,7 @@ def get_matches():
             'how_to_process', 'source_id', 'source_addrseq', 'source_name',
             'source_address', 'source_city', 'source_state', 'source_zip', 'source_ssn',
             'source_address_recomend',
-            'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
+            'dec_ssn', 'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
             'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
             'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id',
             'name_normal_detail', 'address_normal_detail', 'name_match_detail', 'addr_match_detail'
@@ -405,6 +405,57 @@ def bulk_update():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/bulk_field_update', methods=['POST'])
+def bulk_field_update():
+    """Bulk update a single field for multiple records (deferred until Save)."""
+    global _pending_changes
+    try:
+        data = request.json
+        row_ids = data.get('row_ids', [])
+        field = data.get('field')
+        value = data.get('value')
+
+        if not row_ids or not field:
+            return jsonify({'error': 'Missing required fields'}), 400
+
+        allowed_fields = {
+            'recommendation', 'source_name', 'source_address_recomend',
+            'source_city', 'source_state', 'source_zip', 'address_reason',
+            'jib', 'rev', 'vendor', 'how_to_process', 'memo'
+        }
+        if field not in allowed_fields:
+            return jsonify({'error': f'Field "{field}" cannot be updated'}), 400
+
+        if field in ('jib', 'rev', 'vendor'):
+            value = int(value)
+
+        df = load_cached_data()
+        success_count = 0
+
+        for row_id in row_ids:
+            if row_id >= len(df):
+                continue
+            old_value = df.at[row_id, field]
+            df.at[row_id, field] = value
+            if row_id not in _pending_changes:
+                _pending_changes[row_id] = {}
+            if field not in _pending_changes[row_id]:
+                _pending_changes[row_id][field] = (str(old_value), value)
+            else:
+                orig_old = _pending_changes[row_id][field][0]
+                _pending_changes[row_id][field] = (orig_old, value)
+            success_count += 1
+
+        return jsonify({
+            'success': True,
+            'updated': success_count,
+            'pending_count': len(_pending_changes)
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/matches_all')
 def get_matches_all():
     """Return full dataset as JSON for AG Grid client-side processing"""
@@ -418,7 +469,7 @@ def get_matches_all():
             'how_to_process', 'source_id', 'source_addrseq', 'source_name',
             'source_address', 'source_city', 'source_state', 'source_zip', 'source_ssn',
             'source_address_recomend',
-            'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
+            'dec_ssn', 'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
             'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
             'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id',
             'name_normal_detail', 'address_normal_detail', 'name_match_detail', 'addr_match_detail'
@@ -649,6 +700,50 @@ def save_changes():
             'saved': saved_count,
             'pending_count': 0,
             'message': f'Saved {saved_count} record(s) to Snowflake ({affected} rows updated)'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/staging_count')
+def staging_count():
+    """Return the number of records eligible for staging."""
+    try:
+        df = load_cached_data()
+        count = count_staging_eligible(df)
+        return jsonify({'count': count})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/stage_approved', methods=['POST'])
+def stage_approved():
+    """Copy eligible APPROVED records to staging table and flag as STAGED."""
+    global _pending_changes
+    try:
+        if _pending_changes:
+            return jsonify({
+                'error': 'Save your pending changes before staging'
+            }), 400
+
+        df = load_cached_data()
+        staged = stage_approved_records(DATA_CONFIG, df)
+
+        if staged == 0:
+            return jsonify({
+                'success': True,
+                'staged': 0,
+                'message': 'No eligible records to stage'
+            })
+
+        # Force-reload from Snowflake so in-memory state reflects STAGED flags
+        load_cached_data(force_reload=True)
+
+        return jsonify({
+            'success': True,
+            'staged': staged,
+            'message': f'Staged {staged} record(s) to staging table'
         })
 
     except Exception as e:
