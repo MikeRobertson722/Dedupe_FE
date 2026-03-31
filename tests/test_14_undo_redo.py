@@ -54,7 +54,7 @@ def _undo_and_wait(app_page: Page, row_id: int, field: str, expected_value):
                     .catch(() => resolve(false));
             });
         }""",
-        [row_id, field, expected_value],
+        arg=[row_id, field, expected_value],
         timeout=UNDO_TIMEOUT
     )
     app_page.wait_for_timeout(300)
@@ -72,7 +72,7 @@ def _redo_and_wait(app_page: Page, row_id: int, field: str, expected_value):
                     .catch(() => resolve(false));
             });
         }""",
-        [row_id, field, expected_value],
+        arg=[row_id, field, expected_value],
         timeout=UNDO_TIMEOUT
     )
     app_page.wait_for_timeout(300)

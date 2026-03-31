@@ -1167,24 +1167,46 @@ function bulkApprove() {
     if (n === 0) return;
     showConfirm('Approve Selected', '<i class="fas fa-check-circle text-success fa-2x mb-2"></i><br>Approve <strong>' + n + '</strong> selected record' + (n > 1 ? 's' : '') + '?', function() {
         var undoChanges = [];
+        var processValues = {};
         selectedRows.forEach(function(rid) {
             var node = gridApi.getRowNode(String(rid));
             var oldVal = node ? (node.data.recommendation || '') : '';
             undoChanges.push({ rowId: rid, field: 'recommendation', oldValue: oldVal, newValue: 'APPROVED' });
+            // Capture the current process value (may be pre-filled client-side) so it
+            // gets persisted alongside the recommendation change.
+            if (node && node.data && node.data.how_to_process) {
+                processValues[rid] = node.data.how_to_process;
+            }
         });
         if (undoChanges.length > 0) pushUndo({ type: 'bulk', changes: undoChanges });
         $.ajax({
             url: '/api/bulk_update', method: 'POST', contentType: 'application/json',
-            data: JSON.stringify({ row_ids: Array.from(selectedRows), recommendation: 'APPROVED' }),
+            data: JSON.stringify({ row_ids: Array.from(selectedRows), recommendation: 'APPROVED', process_values: processValues }),
             success: function(data) {
-                showToast('Approved ' + data.updated + ' records (unsaved)', 'success');
+                var approved = data.updated || 0;
                 pendingCount = data.pending_count || 0;
-                updateSaveBtn();
                 gridApi.deselectAll();
                 selectedRows.clear();
                 updateSelectionInfo();
-                refreshGridData();
-                loadStats();
+                // Auto-save immediately after bulk approve
+                $.ajax({
+                    url: '/api/save_changes', method: 'POST', contentType: 'application/json',
+                    data: JSON.stringify({}),
+                    success: function(saveData) {
+                        pendingCount = saveData.pending_count || 0;
+                        updateSaveBtn();
+                        refreshGridData();
+                        loadStats();
+                        loadStagingCount();
+                        showToast('Approved and saved ' + approved + ' record' + (approved !== 1 ? 's' : ''), 'success');
+                    },
+                    error: function(xhr) {
+                        updateSaveBtn();
+                        refreshGridData();
+                        loadStats();
+                        showToast('Approved but save failed: ' + (xhr.responseJSON ? xhr.responseJSON.error : 'unknown error'), 'error');
+                    }
+                });
             },
             error: function() { showToast('Bulk approve failed', 'error'); }
         });
@@ -1317,50 +1339,112 @@ var SR_TEXT_COLS = [
 var srHighlightInterval = null;
 
 function srClearHighlight() {
-    $('.sr-highlight').removeClass('sr-highlight');
     if (srHighlightInterval) { clearInterval(srHighlightInterval); srHighlightInterval = null; }
+    document.querySelectorAll('.ag-cell.sr-highlight, .ag-cell.sr-highlight-current').forEach(function(cell) {
+        cell.classList.remove('sr-highlight', 'sr-highlight-current');
+        cell.querySelectorAll('.sr-match-text').forEach(function(span) {
+            span.replaceWith(document.createTextNode(span.textContent));
+        });
+    });
 }
 
-function srKeepHighlight() {
-    // Re-apply highlight periodically (AG Grid virtualisation can remove classes on scroll)
-    srClearHighlight();
-    if (srMatchIdx < 0 || srMatchIdx >= srMatches.length) return;
-    var m = srMatches[srMatchIdx];
+function srApplyHighlights() {
+    // Re-apply every 200ms so AG Grid virtualisation doesn't lose the highlights.
     var search = $('#srSearch').val();
+    if (!search || !srMatches.length) return;
     var caseSensitive = $('#srCaseSensitive').is(':checked');
-    function apply() {
-        var rowEl = document.querySelector('.ag-row[row-id="' + m.nodeId + '"]');
-        if (!rowEl) return;
-        var cell = rowEl.querySelector('.ag-cell[col-id="' + m.col + '"]');
-        if (!cell) return;
-        cell.classList.add('sr-highlight');
-        // Highlight the matched text within the cell
-        if (search && cell.querySelector('.sr-match-text') === null) {
-            var flags = caseSensitive ? 'g' : 'gi';
-            var re = new RegExp('(' + search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', flags);
-            var inner = cell.innerHTML;
-            if (!inner.includes('sr-match-text')) {
-                cell.innerHTML = inner.replace(re, '<span class="sr-match-text">$1</span>');
+    var flags = caseSensitive ? 'g' : 'gi';
+    var re = new RegExp('(' + search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', flags);
+
+    // Build nodeId → [col] lookup for O(1) checks
+    var matchMap = {};
+    srMatches.forEach(function(m) {
+        if (!matchMap[m.nodeId]) matchMap[m.nodeId] = [];
+        if (matchMap[m.nodeId].indexOf(m.col) === -1) matchMap[m.nodeId].push(m.col);
+    });
+    var cur = srMatchIdx >= 0 && srMatchIdx < srMatches.length ? srMatches[srMatchIdx] : null;
+
+    document.querySelectorAll('.ag-row').forEach(function(rowEl) {
+        var nodeId = rowEl.getAttribute('row-id');
+        if (!matchMap[nodeId]) return;
+        matchMap[nodeId].forEach(function(col) {
+            var cell = rowEl.querySelector('.ag-cell[col-id="' + col + '"]');
+            if (!cell) return;
+            // Wrap matched text if not already done (guard against double-wrap on re-render)
+            if (!cell.querySelector('.sr-match-text')) {
+                cell.innerHTML = cell.innerHTML.replace(re, '<span class="sr-match-text">$1</span>');
             }
-        }
-    }
-    apply();
-    srHighlightInterval = setInterval(apply, 200);
+            cell.classList.add('sr-highlight');
+            var isCurrent = cur && cur.nodeId === nodeId && cur.col === col;
+            cell.classList.toggle('sr-highlight-current', isCurrent);
+        });
+    });
+}
+
+function srFindPrev() {
+    var search = $('#srSearch').val();
+    if (!search) { $('#srMatchInfo').text('Enter search text.'); return; }
+    if (srMatches.length === 0) { srBuildMatches(); }
+    if (srMatches.length === 0) { srUpdateInfo(); return; }
+    srMatchIdx = (srMatchIdx - 1 + srMatches.length) % srMatches.length;
+    srHighlightMatch();
+    srUpdateInfo();
 }
 
 function openSearchReplace() {
     if (!srModal) {
-        srModal = new bootstrap.Modal(document.getElementById('searchReplaceModal'));
+        // backdrop:false keeps the grid interactive while the panel is open
+        srModal = new bootstrap.Modal(document.getElementById('searchReplaceModal'), { backdrop: false });
         var srFindTimer;
-        $('#srSearch, #srColumn, #srCaseSensitive').on('input change', function() {
+        // #srSearch: input only — the 'change' event fires on blur and can race
+        // with Find Next clicks, resetting srMatchIdx unexpectedly.
+        $('#srSearch').on('input', function() {
             clearTimeout(srFindTimer);
             srMatches = []; srMatchIdx = -1;
             srClearHighlight();
             srFindTimer = setTimeout(srAutoFind, 300);
         });
-        // Clear highlight when modal closes
-        document.getElementById('searchReplaceModal').addEventListener('hidden.bs.modal', function() {
+        $('#srColumn, #srCaseSensitive').on('input change', function() {
+            clearTimeout(srFindTimer);
+            srMatches = []; srMatchIdx = -1;
             srClearHighlight();
+            srFindTimer = setTimeout(srAutoFind, 300);
+        });
+
+        // Make modal draggable by its header
+        var srModalEl = document.getElementById('searchReplaceModal');
+        var srDialog = srModalEl.querySelector('.modal-dialog');
+        var srHeader = srModalEl.querySelector('.modal-header');
+        var srDragX = 0, srDragY = 0, srDragging = false, srOriginX, srOriginY;
+        srHeader.style.cursor = 'move';
+        srHeader.addEventListener('mousedown', function(e) {
+            if (e.target.closest('button')) return;
+            srDragging = true;
+            srOriginX = e.clientX - srDragX;
+            srOriginY = e.clientY - srDragY;
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', function(e) {
+            if (!srDragging) return;
+            srDragX = e.clientX - srOriginX;
+            srDragY = e.clientY - srOriginY;
+            srDialog.style.transform = 'translate(' + srDragX + 'px, ' + srDragY + 'px)';
+        });
+        document.addEventListener('mouseup', function() { srDragging = false; });
+
+        // Bootstrap adds overflow:hidden + padding-right to body when a modal opens.
+        // Remove those immediately so the grid behind remains fully usable.
+        srModalEl.addEventListener('shown.bs.modal', function() {
+            document.body.classList.remove('modal-open');
+            document.body.style.overflow = '';
+            document.body.style.paddingRight = '';
+        });
+
+        // Clear highlight and reset position when modal closes
+        srModalEl.addEventListener('hidden.bs.modal', function() {
+            srClearHighlight();
+            srDragX = 0; srDragY = 0;
+            srDialog.style.transform = '';
         });
     }
     $('#srMatchInfo').text('');
@@ -1403,19 +1487,18 @@ function srBuildMatches() {
 }
 
 function srHighlightMatch() {
-    srClearHighlight();
     if (srMatchIdx < 0 || srMatchIdx >= srMatches.length) return;
     var m = srMatches[srMatchIdx];
     var node = gridApi.getRowNode(m.nodeId);
     if (!node) return;
-    // Ensure the column is visible
+    // Ensure the column is visible and scroll current match into view
     var colDef = gridApi.getColumnDef(m.col);
     if (colDef && colDef.hide) {
         gridApi.setColumnVisible(m.col, true);
     }
     gridApi.ensureNodeVisible(node, 'middle');
-    // Start persistent highlight (survives AG Grid scroll re-renders)
-    setTimeout(function() { srKeepHighlight(); }, 100);
+    // Re-apply highlights (sr-highlight-current will move to the new match)
+    setTimeout(srApplyHighlights, 100);
 }
 
 function srUpdateInfo() {
@@ -1428,11 +1511,19 @@ function srUpdateInfo() {
 
 function srAutoFind() {
     var search = $('#srSearch').val();
-    if (!search) { $('#srMatchInfo').text(''); srMatches = []; srMatchIdx = -1; return; }
+    if (!search) {
+        $('#srMatchInfo').text(''); srMatches = []; srMatchIdx = -1;
+        srClearHighlight();
+        return;
+    }
+    srClearHighlight();
     srBuildMatches();
     if (srMatches.length > 0) {
         srMatchIdx = 0;
         srHighlightMatch();
+        // Persistent interval keeps highlights alive through AG Grid virtualisation
+        if (srHighlightInterval) clearInterval(srHighlightInterval);
+        srHighlightInterval = setInterval(srApplyHighlights, 200);
     }
     srUpdateInfo();
 }

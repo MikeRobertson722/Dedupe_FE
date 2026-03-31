@@ -63,9 +63,20 @@ body {
 /* Cell selection */
 .ag-cell.cell-selected { background-color: #b3d9ff !important; outline: 1px solid #0d6efd; }
 
-/* Search & Replace current match highlight */
-.ag-cell.sr-highlight { background-color: #ff6b6b !important; outline: 3px solid #dc3545; color: #fff !important; }
-.sr-match-text { background-color: #dc3545; color: #fff; font-weight: bold; padding: 0 2px; border-radius: 2px; }
+/* Search & Replace — all matching cells: yellow mark on matched text */
+.ag-cell.sr-highlight .sr-match-text { background-color: #ffe066; color: #333; font-weight: bold; padding: 0 2px; border-radius: 2px; }
+/* Current match: vivid red mark + cell outline */
+.ag-cell.sr-highlight-current { outline: 2px solid #dc3545 !important; }
+.ag-cell.sr-highlight-current .sr-match-text { background-color: #dc3545; color: #fff; font-weight: bold; padding: 0 2px; border-radius: 2px; }
+
+/* Search & Replace modal — non-blocking floating panel */
+/* The outer .modal wrapper spans the viewport; make it click-through so the grid behind stays interactive */
+#searchReplaceModal { pointer-events: none; }
+/* The dialog panel itself must still receive mouse events */
+#searchReplaceModal .modal-dialog { pointer-events: all; }
+/* Draggable header */
+#searchReplaceModal .modal-header { cursor: move; user-select: none; }
+#searchReplaceModal .modal-header button { cursor: pointer; }
 
 /* Row selection via checkbox */
 .ag-row.row-selected { background-color: #cfe2ff !important; }

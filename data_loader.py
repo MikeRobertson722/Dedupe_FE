@@ -299,24 +299,43 @@ def merge_changes_to_snowflake(
         all_fields.update(fields.keys())
     all_fields = sorted(all_fields)
 
+    # Integer fields (booleans stored as 0/1); everything else is VARCHAR.
+    # CASTs go directly into the VALUES row placeholders so Snowflake can type
+    # every column even when all values for that column happen to be NULL
+    # (error "invalid data type [unknown]" occurs when type can't be inferred).
+    db_cols = [field_to_db_col.get(f, f).upper() for f in all_fields]
+    int_db_cols = {'JIB', 'REV', 'VENDOR'}
+
+    def _cast_ph(db_col: str) -> str:
+        return 'CAST(%s AS INTEGER)' if db_col in int_db_cols else 'CAST(%s AS VARCHAR)'
+
+    def _coerce(value, db_col: str):
+        """Normalise Python/pandas values to types the Snowflake connector handles."""
+        import math
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return 0 if db_col in int_db_cols else ''
+        if db_col in int_db_cols:
+            return int(value)
+        return str(value)
+
     # Build value rows and flat params for a single MERGE
     placeholders = []
     params: list = []
     for row_id, fields in pending_changes.items():
         cid = str(df.at[row_id, 'source_id'])
         ssn = str(df.at[row_id, 'source_ssn'])
-        row_ph = ['%s', '%s']
+        row_ph = ['CAST(%s AS VARCHAR)', 'CAST(%s AS VARCHAR)']
         params.extend([cid, ssn])
-        for f in all_fields:
+        for f, c in zip(all_fields, db_cols):
             entry = fields.get(f)
             if isinstance(entry, tuple):
-                params.append(entry[1])
+                raw = entry[1]
             elif entry is not None:
-                params.append(entry)
+                raw = entry
             else:
-                # No change for this field on this row — preserve current value
-                params.append(df.at[row_id, f] if f in df.columns else None)
-            row_ph.append('%s')
+                raw = df.at[row_id, f] if f in df.columns else None
+            params.append(_coerce(raw, c))
+            row_ph.append(_cast_ph(c))
         placeholders.append('(' + ', '.join(row_ph) + ')')
 
     own_cursor = cursor is None
@@ -325,16 +344,14 @@ def merge_changes_to_snowflake(
         cursor = conn.cursor()
 
     # Single MERGE: all rows in one statement
-    # Use mapped DB column names for the Snowflake MERGE
-    db_cols = [field_to_db_col.get(f, f).upper() for f in all_fields]
     src_cols = ['CID', 'SSN'] + db_cols
+    select_clause = ', '.join(f'column{i + 1} AS {c}' for i, c in enumerate(src_cols))
     values_block = ', '.join(placeholders)
     set_clause = ', '.join(f't.{c} = s.{c}' for c in db_cols)
-    print(f"  [MERGE DEBUG] fields={all_fields}, rows={len(pending_changes)}, params={params[:10]}{'...' if len(params) > 10 else ''}")
 
     sql = (
         f"MERGE INTO {table} t USING ("
-        f"SELECT {', '.join('column' + str(i+1) + ' AS ' + c for i, c in enumerate(src_cols))} "
+        f"SELECT {select_clause} "
         f"FROM VALUES {values_block}"
         f") s ON t.SOURCE_ID = s.CID AND t.SOURCE_SSN = s.SSN "
         f"WHEN MATCHED THEN UPDATE SET {set_clause}"

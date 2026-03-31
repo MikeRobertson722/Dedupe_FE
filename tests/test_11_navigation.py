@@ -16,7 +16,7 @@ class TestHelpModal:
         app_page.click(HELP_BTN)
         wait_for_modal_visible(app_page, HELP_MODAL)
         sections = app_page.locator(f"{HELP_ACCORDION} .accordion-item")
-        assert sections.count() == 8
+        assert sections.count() == 9
 
     def test_help_closes(self, app_page: Page):
         app_page.click(HELP_BTN)

@@ -364,6 +364,9 @@ def bulk_update():
         data = request.json
         row_ids = data.get('row_ids', [])
         new_recommendation = data.get('recommendation', 'APPROVED')
+        # Optional map of {row_id: how_to_process} to persist alongside the rec change.
+        # Keys may be strings (JSON object keys are always strings).
+        process_values = {int(k): v for k, v in data.get('process_values', {}).items() if v}
 
         if not row_ids:
             return jsonify({'error': 'No row IDs provided'}), 400
@@ -378,16 +381,27 @@ def bulk_update():
                     errors.append(f"Invalid row_id: {row_id}")
                     continue
 
-                old_rec = str(df.at[row_id, 'recommendation'] or '')
-                df.at[row_id, 'recommendation'] = new_recommendation
-
                 if row_id not in _pending_changes:
                     _pending_changes[row_id] = {}
+
+                old_rec = str(df.at[row_id, 'recommendation'] or '')
+                df.at[row_id, 'recommendation'] = new_recommendation
                 if 'recommendation' not in _pending_changes[row_id]:
                     _pending_changes[row_id]['recommendation'] = (old_rec, new_recommendation)
                 else:
                     orig_old = _pending_changes[row_id]['recommendation'][0]
                     _pending_changes[row_id]['recommendation'] = (orig_old, new_recommendation)
+
+                # Persist process value if provided (captures client-side pre-fills)
+                if row_id in process_values:
+                    new_process = process_values[row_id]
+                    old_process = str(df.at[row_id, 'how_to_process'] or '')
+                    df.at[row_id, 'how_to_process'] = new_process
+                    if 'how_to_process' not in _pending_changes[row_id]:
+                        _pending_changes[row_id]['how_to_process'] = (old_process, new_process)
+                    else:
+                        orig_old_p = _pending_changes[row_id]['how_to_process'][0]
+                        _pending_changes[row_id]['how_to_process'] = (orig_old_p, new_process)
 
                 success_count += 1
 

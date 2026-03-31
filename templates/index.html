@@ -46,7 +46,6 @@
                         <select id="ssnFilter" class="form-select form-select-sm">
                             <option value="">All</option>
                             <option value="yes">Yes</option>
-                            <option value="partial">Partial</option>
                             <option value="no">No</option>
                         </select>
                     </div>
@@ -257,8 +256,8 @@
         </div>
     </div>
 
-    <!-- Search & Replace Modal -->
-    <div class="modal fade" id="searchReplaceModal" tabindex="-1">
+    <!-- Search & Replace Modal — non-blocking: backdrop removed so the grid stays interactive -->
+    <div class="modal fade" id="searchReplaceModal" tabindex="-1" data-bs-backdrop="false" data-bs-keyboard="true">
         <div class="modal-dialog modal-dialog-centered" style="max-width:420px;">
             <div class="modal-content">
                 <div class="modal-header py-2 bg-dark text-white">
@@ -301,8 +300,11 @@
                 </div>
                 <div class="modal-footer py-2 justify-content-between">
                     <div>
-                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="srFindNext()" title="Find next match">
-                            <i class="fas fa-search"></i> Find Next
+                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="srFindPrev()" title="Find previous match">
+                            <i class="fas fa-chevron-up"></i> Prev
+                        </button>
+                        <button type="button" class="btn btn-outline-primary btn-sm ms-1" onclick="srFindNext()" title="Find next match">
+                            <i class="fas fa-chevron-down"></i> Next
                         </button>
                         <button type="button" class="btn btn-outline-success btn-sm ms-1" onclick="srReplaceCurrent()" title="Replace current match and find next">
                             <i class="fas fa-pen"></i> Replace
@@ -332,28 +334,47 @@
                             <div id="helpDataSources" class="accordion-collapse collapse show" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Data Source</strong> &mdash; All data is loaded from Snowflake on startup.</li>
-                                        <li><strong>All changes are deferred</strong> &mdash; Edits to any field (recommendation, DEC fields, memo, process, BA type flags) are held in memory until Save is clicked.</li>
-                                        <li><strong>Save Changes</strong> &mdash; Writes all pending changes to Snowflake in a single batch. The badge shows how many records have unsaved changes.</li>
-                                        <li><strong>Refresh</strong> (<i class="fas fa-sync-alt"></i>) &mdash; Reloads data from Snowflake. Unsaved changes will be lost.</li>
-                                        <li><strong>Import</strong> &mdash; CSV/Excel files can still be imported for Source ID matching (JIB/Rev/Vendor flags).</li>
-                                        <li><strong>Dev Notes</strong> (<i class="fas fa-file-word"></i>) &mdash; Opens the development notes document in Word.</li>
+                                        <li><strong>Data source</strong> &mdash; All records are loaded from Snowflake at startup.</li>
+                                        <li><strong>Deferred saves</strong> &mdash; Edits to any field are held in memory until explicitly saved. The <strong>Save Changes</strong> badge shows how many records have unsaved changes.</li>
+                                        <li><strong>Save Changes</strong> &mdash; Writes all pending changes to Snowflake in a single batch operation.</li>
+                                        <li><strong>Approve Selected auto-saves</strong> &mdash; Bulk-approving selected rows saves to Snowflake immediately &mdash; no separate Save step needed.</li>
+                                        <li><strong>Refresh</strong> (<i class="fas fa-sync-alt"></i>) &mdash; Reloads all data from Snowflake. Any unsaved changes will be discarded.</li>
+                                        <li><strong>Import Source IDs</strong> &mdash; Choose JIB, Rev, or Vendor from the BA type dropdown, then upload a CSV/TXT file of Source IDs (one per line) to bulk-set that flag across matching records.</li>
                                     </ul>
                                 </div>
                             </div>
                         </div>
 
                         <div class="accordion-item">
-                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpFilter"><i class="fas fa-filter me-2 text-primary"></i> Filtering &amp; Searching</button></h2>
+                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpFilter"><i class="fas fa-filter me-2 text-primary"></i> Filtering</button></h2>
                             <div id="helpFilter" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Recommendation filter</strong> &mdash; Multi-select dropdown to filter by one or more recommendation types. No checkboxes checked = show all.</li>
-                                        <li><strong>SSN Match</strong> &mdash; Filter by Yes (100), Partial (1-99), or No (0).</li>
-                                        <li><strong>Name / Address score</strong> &mdash; Set min and max thresholds for Name Score and Address Score.</li>
-                                        <li><strong>Search box</strong> &mdash; Type to search across all visible columns (server-side, case-insensitive).</li>
-                                        <li><strong>Recommendation cards</strong> &mdash; Click any recommendation card to filter to that type. Resets page to first page.</li>
-                                        <li><strong>Clear</strong> &mdash; Resets all filters at once and clears row selections.</li>
+                                        <li><strong>Recommendation filter</strong> &mdash; Multi-select dropdown. Check one or more recommendation types to show only those rows. No boxes checked = show all.</li>
+                                        <li><strong>Recommendation cards</strong> &mdash; Click any card in the summary bar to jump straight to that recommendation type. Click again or use Clear to reset.</li>
+                                        <li><strong>SSN Match</strong> &mdash; Filter to Yes (score = 100) or No (score = 0).</li>
+                                        <li><strong>Min / Max Name Score</strong> &mdash; Show only rows where the Name Score falls within the selected range.</li>
+                                        <li><strong>Min / Max Addr Score</strong> &mdash; Show only rows where the Address Score falls within the selected range.</li>
+                                        <li><strong>Search box</strong> &mdash; Type to instantly filter across all visible text columns (case-insensitive).</li>
+                                        <li><strong>Clear</strong> &mdash; Resets all active filters and clears row selections in one click.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="accordion-item">
+                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpSearchReplace"><i class="fas fa-exchange-alt me-2 text-success"></i> Search &amp; Replace</button></h2>
+                            <div id="helpSearchReplace" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                                <div class="accordion-body py-2">
+                                    <ul class="mb-0">
+                                        <li><strong>Opening</strong> &mdash; Click <strong>Search &amp; Replace</strong> in the toolbar. The modal can be dragged by its header bar to move it out of the way.</li>
+                                        <li><strong>Scope</strong> &mdash; Search &amp; Replace only operates on rows currently visible in the grid (after all filters are applied). Hidden rows are never affected.</li>
+                                        <li><strong>Highlights</strong> &mdash; Matching text is highlighted <span style="background:#ffe066;color:#333;padding:0 3px;border-radius:2px;font-size:0.8rem;">yellow</span> across all visible matching cells as you type. The current focused match is shown in <span style="background:#dc3545;color:#fff;padding:0 3px;border-radius:2px;font-size:0.8rem;">red</span>.</li>
+                                        <li><strong>Column</strong> &mdash; Limit the search to a specific column, or leave it on <em>All Columns</em> to search across all editable text fields.</li>
+                                        <li><strong>Case sensitive</strong> &mdash; Toggle the checkbox to make the search case-sensitive.</li>
+                                        <li><strong>Find Next</strong> &mdash; Scrolls to and highlights the next match in the grid.</li>
+                                        <li><strong>Replace</strong> &mdash; Replaces the current match only and advances to the next one.</li>
+                                        <li><strong>Replace All</strong> &mdash; Replaces every match in all visible rows at once. Changes are held as pending until Save Changes is clicked.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -364,12 +385,12 @@
                             <div id="helpTable" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Column sorting</strong> &mdash; Click any column header to sort ascending/descending (server-side).</li>
-                                        <li><strong>Column reordering</strong> &mdash; Drag column headers to rearrange the table layout. The checkbox column (left) is fixed in place.</li>
-                                        <li><strong>Column resizing</strong> &mdash; Drag the right edge of any column header to adjust width. All data columns are resizable (SSN, scores, Status, Process, Source/DEC name/address/CSZ, Source ID, DEC Code). Minimum width is 50px.</li>
-                                        <li><strong>Show/Hide Columns</strong> &mdash; Dropdown to toggle visibility of any column. Columns are color-coded: <span style="background:#1e3a8a;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">Source</span> <span style="background:#9b4d6e;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">DEC</span> <span style="background:#212529;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">General</span></li>
-                                        <li><strong>Hidden by default</strong> &mdash; UID, Address Lookup, Source ID, DEC Code, JIB, Rev, Vendor, and Actions columns are hidden initially. Use Show/Hide Columns to reveal them.</li>
-                                        <li><strong>Sticky headers</strong> &mdash; Column headers stay visible when scrolling through table rows.</li>
+                                        <li><strong>Column sorting</strong> &mdash; Click any column header to sort ascending / descending.</li>
+                                        <li><strong>Column reordering</strong> &mdash; Drag column headers left or right to rearrange the layout. The checkbox column is pinned to the left.</li>
+                                        <li><strong>Column resizing</strong> &mdash; Drag the right edge of any column header to adjust its width.</li>
+                                        <li><strong>Show / Hide Columns</strong> &mdash; Use the column visibility dropdown to toggle any column on or off. Columns are colour-coded by type: <span style="background:#1e3a8a;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">Source</span> <span style="background:#9b4d6e;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">DEC</span> <span style="background:#212529;color:#fff;border-radius:3px;padding:1px 6px;font-size:0.75rem;">General</span></li>
+                                        <li><strong>Hidden by default</strong> &mdash; Run ID, Address Lookup, Source ID, DEC Code, JIB, Rev, Vendor, and Actions columns are hidden on load. Reveal them via Show / Hide Columns.</li>
+                                        <li><strong>Row count</strong> &mdash; The grid info bar shows how many rows are currently displayed vs the total loaded.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -380,12 +401,13 @@
                             <div id="helpSelect" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Row checkboxes</strong> &mdash; Select individual rows; selection persists across pages.</li>
-                                        <li><strong>Select All</strong> &mdash; Header checkbox selects/deselects all visible rows on the current page.</li>
-                                        <li><strong>Cell click</strong> &mdash; Click a cell to highlight it (blue). The cell text is ready to copy.</li>
-                                        <li><strong>Shift+click (same column)</strong> &mdash; Select a range of cells in that column from the last-clicked cell to the current one.</li>
-                                        <li><strong>Shift+click (different column)</strong> &mdash; Select the entire row of the clicked cell; text is auto-selected for native copy.</li>
-                                        <li><strong>Ctrl+C</strong> &mdash; Copy all highlighted cell values to clipboard (one value per line).</li>
+                                        <li><strong>Row checkboxes</strong> &mdash; Check individual rows to select them. Selection persists when filters change or the grid scrolls.</li>
+                                        <li><strong>Select All</strong> &mdash; The header checkbox selects or deselects all currently visible rows.</li>
+                                        <li><strong>Cell click</strong> &mdash; Click any cell to highlight it in blue and prepare its value for copying.</li>
+                                        <li><strong>Shift+click (same column)</strong> &mdash; Extends the selection to a range of cells within the same column.</li>
+                                        <li><strong>Shift+click (different column)</strong> &mdash; Selects the entire row of the clicked cell.</li>
+                                        <li><strong>Ctrl+C</strong> &mdash; Copies all highlighted cell values to the clipboard, one value per line.</li>
+                                        <li><strong>Download Selected</strong> (<i class="fas fa-download"></i>) &mdash; Exports all checkbox-selected rows to a CSV file.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -396,26 +418,28 @@
                             <div id="helpEdit" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Edit button</strong> (<i class="fas fa-edit"></i>) &mdash; Opens a side-by-side modal showing Source (read-only) vs DEC (editable) fields with match scores. Edit DEC name, address, city, state, zip, and recommendation.</li>
-                                        <li><strong>Quick Approve</strong> (<i class="fas fa-check"></i>) &mdash; Instantly sets a single record's recommendation to APPROVED without opening the edit modal.</li>
-                                        <li><strong>Approve Selected</strong> &mdash; Bulk-approves all checkbox-selected rows in one action.</li>
-                                        <li><strong>Process column</strong> &mdash; Click any Process cell to open a dropdown with options: "Add new BA and address", "Merge BA - add addr", "Merge BA and address", or "Manual Review -DNP". Defaults are auto-populated based on the recommendation status.</li>
-                                        <li><strong>JIB / Rev / Vendor checkboxes</strong> &mdash; Toggle BA type flags directly in the table. If multiple cells are selected in the column, the toggle applies to all selected rows at once.</li>
-                                        <li><strong>Memo column</strong> &mdash; Click any Memo cell to type a free-text note. Saves automatically on Enter or when you click away. Press Escape to cancel. Also editable in the Edit modal.</li>
-                                        <li><strong>Save Changes</strong> &mdash; Persists all pending changes (recommendations, DEC fields, memo, process, BA type flags) to Snowflake in one batch. The badge shows how many records have unsaved changes.</li>
+                                        <li><strong>Edit button</strong> (<i class="fas fa-edit"></i>) &mdash; Opens a side-by-side modal comparing Source (editable: name, address, city, state, zip) against DEC (read-only) fields, with match scores and a Recommendation dropdown.</li>
+                                        <li><strong>Quick Approve</strong> (<i class="fas fa-check"></i>) &mdash; Sets a single record's recommendation to APPROVED in one click without opening the edit modal. Queued as a pending change.</li>
+                                        <li><strong>Approve Selected</strong> &mdash; Bulk-sets all checkbox-selected rows to APPROVED and saves to Snowflake immediately, including each row's current Process value.</li>
+                                        <li><strong>Process column</strong> &mdash; Click any Process cell to select a value: <em>Add new BA and address</em>, <em>Add address to existing BA</em>, <em>Merge BA and address</em>, or <em>Manual Review - DNP</em>. Values are pre-filled automatically from the recommendation type and saved when you approve.</li>
+                                        <li><strong>Memo column</strong> &mdash; Click any Memo cell to type a free-text note. Confirms on Enter or click-away; cancels on Escape. Also editable in the Edit modal.</li>
+                                        <li><strong>Address Reason column</strong> &mdash; Free-text field for recording the reason behind an address decision. Editable inline.</li>
+                                        <li><strong>JIB / Rev / Vendor</strong> &mdash; Toggle BA type flags directly in the grid. If multiple cells in the same column are selected, toggling one applies to all selected rows.</li>
+                                        <li><strong>Undo / Redo</strong> &mdash; The <i class="fas fa-undo"></i> and <i class="fas fa-redo"></i> buttons (or <kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd>) step through the change history, including bulk approvals.</li>
                                     </ul>
                                 </div>
                             </div>
                         </div>
 
                         <div class="accordion-item">
-                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpImportExport"><i class="fas fa-file-export me-2 text-danger"></i> Import &amp; Export</button></h2>
-                            <div id="helpImportExport" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                            <h2 class="accordion-header"><button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#helpStaging"><i class="fas fa-paper-plane me-2 text-warning"></i> Staging</button></h2>
+                            <div id="helpStaging" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><strong>Import Source IDs</strong> &mdash; Select JIB, Rev, or Vendor from the BA type dropdown, then pick a CSV/TXT file containing Source IDs (one per line) to bulk-set that flag.</li>
-                                        <li><strong>Export filtered</strong> &mdash; Downloads all currently filtered records as an Excel file (.xlsx) using the Export button in the toolbar.</li>
-                                        <li><strong>Export selected</strong> (<i class="fas fa-download"></i>) &mdash; Downloads only checkbox-selected rows as Excel (.xlsx).</li>
+                                        <li><strong>Eligibility</strong> &mdash; A record is eligible to stage when its recommendation is APPROVED <em>and</em> it has a Process value set.</li>
+                                        <li><strong>Stage Approved</strong> &mdash; The <i class="fas fa-paper-plane"></i> <strong>Stage Approved</strong> button (enabled when eligible records exist) moves all eligible records to the staging table in Snowflake. Their recommendation changes to <span class="badge" style="background:#6610f2">STAGED</span> and they are hidden from the default grid view.</li>
+                                        <li><strong>Save first</strong> &mdash; Any unsaved changes must be saved before staging. The button is blocked if pending changes exist.</li>
+                                        <li><strong>Badge count</strong> &mdash; The number next to Stage Approved shows how many records are currently eligible.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -426,13 +450,21 @@
                             <div id="helpVisual" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <ul class="mb-0">
-                                        <li><span class="badge" style="background:#ffe0b2;color:#333;">Orange rows</span> &mdash; Source name or address contains "trust", "trst", or "tr".</li>
-                                        <li><span class="badge" style="background:#f8d7da;color:#333;">Red cells</span> &mdash; Cell contains "DO NOT USE" (or variations: DON'T USE, DNU, etc.).</li>
-                                        <li><strong>Score badges</strong> &mdash; <span class="badge bg-success">100</span> perfect, <span class="badge" style="background:#0d6efd;color:#fff;">90+</span> high, <span class="badge bg-warning text-dark">75+</span> medium, <span class="badge bg-danger">&lt;75</span> low.</li>
-                                        <li><strong>Name score tooltip</strong> &mdash; Hover over a Name Score below 45 to see a tooltip explaining the low score may be because the name exists in the address field.</li>
-                                        <li><strong>SSN badges</strong> &mdash; <span class="badge bg-success">Yes</span> = 100 (perfect match), <span class="badge bg-danger">No</span> = 0 (no match).</li>
-                                        <li><strong>Recommendation badges</strong> &mdash; <span class="badge" style="background:#6c757d">ADD NEW BA</span> no valid SSN or not found in DEC, <span class="badge" style="background:#28a745">MATCH BA + ADDRESS</span> SSN + name + address confirmed, <span class="badge" style="background:#17a2b8">MATCH BA - REVIEW ADDRESS</span> BA confirmed but address below threshold, <span class="badge" style="background:#ffc107;color:#333">NEEDS REVIEW</span> SSN matches but name mismatch or trust/estate.</li>
-                                        <li><strong>Cell selection highlight</strong> &mdash; <span style="background:#b3d9ff;padding:1px 6px;border:1px solid #0d6efd;font-size:0.75rem;">Blue highlight</span> on clicked/selected cells.</li>
+                                        <li><span class="badge" style="background:#ffe0b2;color:#333;">Orange rows</span> &mdash; Source name or address contains a trust/estate keyword ("trust", "trst", "estate", etc.).</li>
+                                        <li><span class="badge" style="background:#f8d7da;color:#333;">Red cells</span> &mdash; Cell value contains a "Do Not Use" variation (DO NOT USE, DON'T USE, DNU, etc.).</li>
+                                        <li><strong>Score badges</strong> &mdash; <span class="badge bg-success">100</span> perfect &nbsp;<span class="badge" style="background:#0d6efd;color:#fff;">90+</span> high &nbsp;<span class="badge bg-warning text-dark">75+</span> medium &nbsp;<span class="badge bg-danger">&lt;75</span> low.</li>
+                                        <li><strong>SSN badges</strong> &mdash; <span class="badge bg-success">Yes</span> = score 100 (full match) &nbsp;<span class="badge bg-danger">No</span> = score 0 (no match).</li>
+                                        <li><strong>Name score tooltip</strong> &mdash; Hover over a Name Score below 45 for a note that the low score may result from the name appearing in the address field rather than the name field.</li>
+                                        <li><strong>Recommendation badges</strong> &mdash;
+                                            <span class="badge" style="background:#6c757d">NEW BA AND NEW ADDRESS</span> &nbsp;
+                                            <span class="badge" style="background:#fd7e14">EXISTING BA ADD NEW ADDRESS</span> &nbsp;
+                                            <span class="badge" style="background:#28a745">EXISTING BA AND EXISTING ADDRESS</span> &nbsp;
+                                            <span class="badge" style="background:#ffc107;color:#333">NEEDS REVIEW</span> &nbsp;
+                                            <span class="badge" style="background:#0d6efd">PROCESSED</span> &nbsp;
+                                            <span class="badge" style="background:#6610f2">STAGED</span>
+                                        </li>
+                                        <li><strong>Cell selection</strong> &mdash; <span style="background:#b3d9ff;padding:1px 6px;border:1px solid #0d6efd;font-size:0.75rem;">Blue highlight</span> on clicked or range-selected cells.</li>
+                                        <li><strong>Search highlights</strong> &mdash; While Search &amp; Replace is open, all matching cells show <span style="background:#ffe066;color:#333;padding:0 3px;border-radius:2px;">yellow</span> on the matched text; the current match is <span style="background:#dc3545;color:#fff;padding:0 3px;border-radius:2px;">red</span>.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -443,13 +475,15 @@
                             <div id="helpKeyboard" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                                 <div class="accordion-body py-2">
                                     <table class="table table-sm table-bordered mb-0" style="font-size:0.8rem;">
-                                        <thead class="table-light"><tr><th style="width:35%">Shortcut</th><th>Action</th></tr></thead>
+                                        <thead class="table-light"><tr><th style="width:40%">Shortcut</th><th>Action</th></tr></thead>
                                         <tbody>
-                                            <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td><td>Copy selected cell values to clipboard</td></tr>
-                                            <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo last action</td></tr>
-                                            <tr><td><kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Redo last undone action</td></tr>
-                                            <tr><td><kbd>Shift</kbd>+Click (same col)</td><td>Select range of cells in a column</td></tr>
-                                            <tr><td><kbd>Shift</kbd>+Click (diff col)</td><td>Select entire row</td></tr>
+                                            <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td><td>Copy highlighted cell values to clipboard</td></tr>
+                                            <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo last change</td></tr>
+                                            <tr><td><kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Redo last undone change</td></tr>
+                                            <tr><td><kbd>Shift</kbd>+Click (same column)</td><td>Select a range of cells within that column</td></tr>
+                                            <tr><td><kbd>Shift</kbd>+Click (different column)</td><td>Select the entire row</td></tr>
+                                            <tr><td><kbd>Enter</kbd> (Memo / Address Reason)</td><td>Confirm inline edit and save</td></tr>
+                                            <tr><td><kbd>Escape</kbd> (Memo / Address Reason)</td><td>Cancel inline edit without saving</td></tr>
                                         </tbody>
                                     </table>
                                 </div>

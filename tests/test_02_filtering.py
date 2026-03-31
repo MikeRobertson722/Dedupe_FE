@@ -75,6 +75,7 @@ class TestSSNFilter:
         for i in range(min(badges.count(), 5)):
             expect(badges.nth(i)).to_have_text("No")
 
+    @pytest.mark.skip(reason="Partial SSN option removed from filter dropdown")
     def test_ssn_partial_filter(self, app_page: Page):
         app_page.select_option(SSN_FILTER, "partial")
         wait_for_grid_update(app_page)

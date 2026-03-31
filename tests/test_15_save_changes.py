@@ -154,24 +154,29 @@ class TestSaveFlow:
         ))
         original = api_get_record(row_id)
 
-        # Edit memo via API to create pending change
-        api_update_field(row_id, "memo", "SAVE_FLOW_TEST")
-        app_page.evaluate("() => refreshGridData()")
-        app_page.wait_for_timeout(2000)
+        # Edit memo via browser click so the frontend AJAX path runs and
+        # pendingCount increments — api_update_field bypasses the frontend entirely.
+        app_page.evaluate(
+            "() => document.querySelector('#matchesGrid .memo-text').click()"
+        )
+        app_page.wait_for_timeout(300)
+        memo_input = app_page.locator("#matchesGrid .ag-cell[col-id='memo'] input").first
+        memo_input.fill("SAVE_FLOW_TEST")
+        memo_input.press("Enter")
+        app_page.wait_for_timeout(1500)
 
-        # Save — button should be enabled since there's a pending change
+        # Save button should now be enabled
         expect(app_page.locator(SAVE_CHANGES_BTN)).to_be_enabled(timeout=10000)
         app_page.click(SAVE_CHANGES_BTN)
         wait_for_toast(app_page, timeout=30000)
         app_page.wait_for_timeout(3000)
 
+        # After save, grid should reflect the new value
         memo_val = app_page.evaluate(
-            "(rid) => gridApi.getRowNode(String(rid)) ? "
-            "gridApi.getRowNode(String(rid)).data.memo : "
-            "gridApi.getDisplayedRowAtIndex(0).data.memo",
+            "(rid) => { var n = gridApi.getRowNode(String(rid)); return n ? n.data.memo : null; }",
             row_id
         )
-        assert memo_val == "SAVE_FLOW_TEST" or True  # Grid may have reloaded
+        assert memo_val == "SAVE_FLOW_TEST"
 
         # Restore
         api_update_field(row_id, "memo", original.get('memo', ''))

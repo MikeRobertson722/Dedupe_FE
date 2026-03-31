@@ -63,7 +63,7 @@ class TestPageLoad:
 
     def test_ssn_filter_has_options(self, app_page: Page):
         options = app_page.locator(f"{SSN_FILTER} option")
-        assert options.count() == 4  # All, Yes, Partial, No
+        assert options.count() == 3  # All, Yes, No (Partial removed)
 
     def test_rec_filter_uses_card_click(self, app_page: Page):
         """Rec filtering is done via clickable rec cards, not a dropdown."""

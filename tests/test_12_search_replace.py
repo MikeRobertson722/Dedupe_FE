@@ -185,7 +185,7 @@ class TestSearchReplace:
         # Verify the grid data has updated
         app_page.wait_for_function(
             "(rid) => { var n = gridApi.getRowNode(String(rid)); return n && n.data.memo === 'SEARCH_TEST_VALUE'; }",
-            row_id, timeout=5000
+            arg=row_id, timeout=5000
         )
 
         self._open_sr(app_page)
@@ -254,7 +254,7 @@ class TestSearchReplace:
         app_page.wait_for_timeout(2000)
         app_page.wait_for_function(
             "(rid) => { var n = gridApi.getRowNode(String(rid)); return n && n.data.memo === 'PENDING_COUNT_TEST'; }",
-            row_id, timeout=5000
+            arg=row_id, timeout=5000
         )
 
         self._open_sr(app_page)
