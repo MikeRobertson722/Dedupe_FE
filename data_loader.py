@@ -415,13 +415,12 @@ def count_staging_eligible(df: pd.DataFrame) -> int:
 
 def stage_approved_records(config: Dict[str, Any], df: pd.DataFrame) -> int:
     """
-    Copy eligible records to IMPORT_MERGE_STAGING and flag them as STAGED
-    in the source table, all within a single transaction.
+    Copy eligible records to DGO_MA.MA_STAGING.STG_BA_MASTER and flag them
+    as STAGED in the source table, all within a single transaction.
 
     Returns the number of records staged.
     """
     table = config.get('table', 'import_merge_matches').upper()
-    staging_table = table.replace('MATCHES', 'STAGING')
 
     # Identify eligible rows from the DataFrame
     mask = (
@@ -450,34 +449,47 @@ def stage_approved_records(config: Dict[str, Any], df: pd.DataFrame) -> int:
     cursor = conn.cursor()
 
     try:
-        # Get source table columns
-        cursor.execute(f"DESCRIBE TABLE {table}")
-        source_cols = [row[0] for row in cursor.fetchall()]
-
-        # Check which columns exist on the staging table
-        cursor.execute(f"DESCRIBE TABLE {staging_table}")
-        staging_cols = {row[0].upper() for row in cursor.fetchall()}
-
-        # Only copy columns that exist in BOTH tables
-        common_cols = [c for c in source_cols if c.upper() in staging_cols]
-        cols_csv = ', '.join(common_cols)
-
-        meta_cols = []
-        meta_vals = []
-        for col, val in [('STAGED_AT', 'CURRENT_TIMESTAMP()'), ('STAGED_BY', 'CURRENT_USER()')]:
-            if col in staging_cols:
-                meta_cols.append(col)
-                meta_vals.append(val)
-
-        # Build INSERT with common columns + whatever metadata columns exist
-        insert_cols = cols_csv + (', ' + ', '.join(meta_cols) if meta_cols else '')
-        select_cols = cols_csv + (', ' + ', '.join(meta_vals) if meta_vals else '')
-
-        # INSERT into staging (copy source columns + set metadata)
+        # INSERT into STG_BA_MASTER with explicit column mapping
         cursor.execute(
-            f"INSERT INTO {staging_table} ({insert_cols}) "
-            f"SELECT {select_cols} "
-            f"FROM {table} WHERE {eligibility_where}",
+            f"""
+            INSERT INTO DGO_MA.MA_STAGING.STG_BA_MASTER (
+                ADDRADDRESS, ADDRCITY, ADDRCONTACT, ADDRCOUNTRY,
+                ADDRSEQ, ADDRSEQ_SOURCE, ADDRSTATE, ADDRZIPCODE,
+                ECODE, ID, JIBOWNER, LANDOWNER, LEGACY_ID, LOAD_ME,
+                MATCH_BY_ADDRESS, MATCH_BY_ENERTIA, REVOWNER,
+                SOURCESYSTEM, SOURCETABLE, SSN, SSN_2, VALIDATION
+            )
+            SELECT
+                NULLIF(SOURCE_ADDRESS_RECOMEND, ''),
+                NULLIF(SOURCE_CITY, ''),
+                NULLIF(SOURCE_NAME, ''),
+                'US',
+                NULLIF(DEC_ADDRSUBCODE, ''),
+                NULLIF(SOURCE_ADDRSEQ, ''),
+                NULLIF(SOURCE_STATE, ''),
+                NULLIF(SOURCE_ZIP, ''),
+                NULLIF(DEC_HDRCODE, ''),
+                DGO_MA.MA_STAGING.BA_MASTER_SQ.NEXTVAL,
+                TRUE,
+                TRUE,
+                NULLIF(SOURCE_ID, ''),
+                TRUE,
+                CASE WHEN HOW_TO_PROCESS = 'Merge BA and address'
+                     THEN TRUE ELSE FALSE END,
+                CASE WHEN HOW_TO_PROCESS IN ('Merge BA and address',
+                                             'Add address to existing BA')
+                     THEN TRUE ELSE FALSE END,
+                TRUE,
+                (SELECT CONFIG_VALUE FROM BA_CONFIG
+                 WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME'),
+                (SELECT CONFIG_VALUE FROM BA_CONFIG
+                 WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME'),
+                NULLIF(SOURCE_SSN, ''),
+                NULLIF(REGEXP_REPLACE(SOURCE_SSN, '[^A-Za-z0-9]', ''), ''),
+                'IMPORT_MERGE_MATCHES.ID = ' || CAST(ID AS VARCHAR)
+            FROM {table}
+            WHERE {eligibility_where}
+            """,
             pair_params
         )
         staged_count = cursor.rowcount

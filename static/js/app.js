@@ -886,7 +886,7 @@ function applyChanges(changes, direction, callback) {
                 var rowNode = gridApi.getRowNode(String(ch.rowId));
                 if (rowNode) rowNode.setDataValue(ch.field, val);
                 if (++completed === changes.length) {
-                    window._bulkProcessUpdate = false;
+                    setTimeout(function() { window._bulkProcessUpdate = false; }, 0);
                     updateSaveBtn();
                     if (hasRecChange) loadStats();
                     if (callback) callback();
@@ -894,7 +894,7 @@ function applyChanges(changes, direction, callback) {
             },
             error: function() {
                 if (++completed === changes.length) {
-                    window._bulkProcessUpdate = false;
+                    setTimeout(function() { window._bulkProcessUpdate = false; }, 0);
                     updateSaveBtn();
                     if (hasRecChange) loadStats();
                     if (callback) callback();
