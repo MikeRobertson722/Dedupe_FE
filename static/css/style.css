@@ -60,6 +60,9 @@ body {
 /* Do-not-use cell highlight */
 .ag-cell.do-not-use-cell { background-color: #f8d7da !important; }
 
+/* Bad address cell highlight */
+.ag-cell.bad-addr-cell { background-color: #ffd6d6 !important; }
+
 /* Cell selection */
 .ag-cell.cell-selected { background-color: #b3d9ff !important; outline: 1px solid #0d6efd; }
 

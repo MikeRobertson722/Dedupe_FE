@@ -60,6 +60,48 @@ _pending_changes = {}
 # Cached ba_config score ranges (loaded once at first stats call)
 _ba_config_cache = None
 
+# Hardcoded defaults for ba_config values — used by the Config editor "Revert to Defaults" feature
+DEFAULT_BA_CONFIG = {
+    # API
+    'API_BATCH_SIZE':                           '20',
+    'API_MODEL':                                'claude-sonnet-4-5-20250929',
+    'API_SCORE_MAX':                            '70.0',
+    'API_SCORE_MIN':                            '15.0',
+    'USE_API_OVERRIDE':                         'false',
+    # BUCKETS
+    'EXISTING_BA_EXISTING_ADDR_MAX_ADDR_SCORE': '100',
+    'EXISTING_BA_EXISTING_ADDR_MAX_NAME_SCORE': '100',
+    'EXISTING_BA_EXISTING_ADDR_MIN_ADDR_SCORE': '100',
+    'EXISTING_BA_EXISTING_ADDR_MIN_NAME_SCORE': '100',
+    'EXISTING_BA_NEW_ADDR_MAX_ADDR_SCORE':      '0',
+    'EXISTING_BA_NEW_ADDR_MAX_NAME_SCORE':      '100',
+    'EXISTING_BA_NEW_ADDR_MIN_ADDR_SCORE':      '0',
+    'EXISTING_BA_NEW_ADDR_MIN_NAME_SCORE':      '100',
+    'NEW_BA_NEW_ADDR_MAX_ADDR_SCORE':           '0',
+    'NEW_BA_NEW_ADDR_MAX_NAME_SCORE':           '0',
+    'NEW_BA_NEW_ADDR_MIN_ADDR_SCORE':           '0',
+    'NEW_BA_NEW_ADDR_MIN_NAME_SCORE':           '0',
+    # GENERAL
+    'SOURCE_COMPANY_NAME':                      'CANVAS_TEST',
+    # GOOGLE
+    'GOOGLE_ADDR_SCORE_MAX':                    '110',
+    'GOOGLE_ADDR_SCORE_MIN':                    '110',
+    # NAME_MATCHING
+    'ACRONYM_MATCH_SCORE':                      '0.95',
+    'FUZZY_TOKEN_JW_THRESHOLD':                 '0.92',
+    'FUZZY_TOKEN_MIN_LENGTH':                   '4',
+    'NAME_MATCH_THRESHOLD':                     '0.85',
+    'SUPP_NAME_BOOST_CAP':                      '0.95',
+    # SCORING
+    'CITY_WEIGHT':                              '0.4',
+    'SAME_ADDR_CITY_SIM':                       '0.85',
+    'SAME_ADDR_STREET_SIM':                     '0.9',
+    'STREET_WEIGHT':                            '0.6',
+    'ZIP_BONUS':                                '0.05',
+    'ZIP_MUST_MATCH':                           'false',
+    'ZIP_PENALTY_MULT':                         '0.75',
+}
+
 
 def load_cached_data(force_reload=False):
     """Load data from Snowflake, cached in memory"""
@@ -326,6 +368,10 @@ def update_record():
         if row_id >= len(df):
             return jsonify({'error': 'Invalid row_id'}), 400
 
+        # Block edits on STAGED records
+        if str(df.at[row_id, 'recommendation'] or '').upper() == 'STAGED':
+            return jsonify({'error': 'Cannot modify a STAGED record'}), 403
+
         # Coerce value types
         if field in ('jib', 'rev', 'vendor'):
             value = int(value)
@@ -344,7 +390,13 @@ def update_record():
             _pending_changes[row_id][field] = (str(old_value), value)
         else:
             orig_old = _pending_changes[row_id][field][0]
-            _pending_changes[row_id][field] = (orig_old, value)
+            if str(value) == str(orig_old):
+                # Value reverted to original — no longer pending
+                del _pending_changes[row_id][field]
+                if not _pending_changes[row_id]:
+                    del _pending_changes[row_id]
+            else:
+                _pending_changes[row_id][field] = (orig_old, value)
 
         return jsonify({
             'success': True,
@@ -379,6 +431,10 @@ def bulk_update():
             try:
                 if row_id >= len(df):
                     errors.append(f"Invalid row_id: {row_id}")
+                    continue
+
+                # Skip STAGED records — they cannot be modified
+                if str(df.at[row_id, 'recommendation'] or '').upper() == 'STAGED':
                     continue
 
                 if row_id not in _pending_changes:
@@ -504,16 +560,73 @@ def dev_notes():
     if not notes_path.exists():
         return jsonify({'error': 'Dev notes file not found'}), 404
     import subprocess
+    type_def = (
+        'using System; using System.Runtime.InteropServices; '
+        'public class Win32 { '
+        '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); '
+        '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); '
+        '}'
+    )
+    ps_cmd = (
+        f'Start-Process "{notes_path}";'
+        ' Start-Sleep -Milliseconds 1500;'
+        f" Add-Type -TypeDefinition '{type_def}' -ErrorAction SilentlyContinue;"
+        ' $p = Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Select-Object -First 1;'
+        ' if ($p) {'
+        ' [Win32]::ShowWindow($p.MainWindowHandle, 9) | Out-Null;'   # SW_RESTORE
+        ' [Win32]::SetForegroundWindow($p.MainWindowHandle) | Out-Null'
+        ' }'
+    )
     subprocess.Popen(
-        ['powershell', '-WindowStyle', 'Hidden', '-Command',
-         f'Start-Process "{notes_path}";'
-         ' Start-Sleep -Milliseconds 500;'
-         ' (New-Object -ComObject WScript.Shell).AppActivate("Word")'],
+        ['powershell', '-WindowStyle', 'Hidden', '-Command', ps_cmd],
         creationflags=0x08000000
     )
     return jsonify({'message': 'Opened in Word'})
 
 
+
+
+@app.route('/api/ba_config/all')
+def ba_config_all():
+    """Return all rows in ba_config grouped by category."""
+    try:
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT CATEGORY, CONFIG_KEY, CONFIG_VALUE FROM BA_CONFIG ORDER BY CATEGORY, CONFIG_KEY")
+        rows = [{'category': r[0], 'config_key': r[1], 'config_value': r[2]} for r in cursor.fetchall()]
+        return jsonify(rows)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/ba_config/defaults')
+def ba_config_defaults():
+    """Return hardcoded default values for ba_config keys."""
+    return jsonify(DEFAULT_BA_CONFIG)
+
+
+@app.route('/api/ba_config/update', methods=['POST'])
+def ba_config_update():
+    """Update a single CONFIG_VALUE in ba_config."""
+    global _ba_config_cache
+    try:
+        data = request.json
+        category = data.get('category', '').strip()
+        config_key = data.get('config_key', '').strip()
+        config_value = data.get('config_value', '').strip()
+        if not category or not config_key:
+            return jsonify({'error': 'category and config_key are required'}), 400
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE BA_CONFIG SET CONFIG_VALUE = %s WHERE CATEGORY = %s AND CONFIG_KEY = %s",
+            (config_value, category, config_key)
+        )
+        conn.commit()
+        _ba_config_cache = None  # invalidate so next load re-fetches
+        return jsonify({'message': 'Updated'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/search_replace', methods=['POST'])
@@ -575,6 +688,12 @@ def search_replace():
         # Replace mode
         if not match_rows:
             return jsonify({'replaced': 0, 'rows': 0, 'pending_count': len(_pending_changes)})
+
+        # Exclude STAGED rows from replacements
+        match_rows = {
+            idx for idx in match_rows
+            if str(df_full.at[idx, 'recommendation'] or '').upper() != 'STAGED'
+        }
 
         replaced_count = 0
         replaced_rows = set()

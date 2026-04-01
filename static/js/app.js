@@ -14,6 +14,7 @@ var UNDO_MAX = 50;
 
 // Pattern to detect "do not use" variations
 const DO_NOT_USE_RE = /do\s*n[o']?t\s*use|don['\u2019]t\s*use|d\.?n\.?u\.?(?!\w)/i;
+const BAD_ADDR_RE = /bad\s*addr(?:ess)?/i;
 
 // Preferred display order for recommendations
 const REC_ORDER = [
@@ -365,7 +366,7 @@ function initGrid() {
         },
         { headerName: 'Src Name', field: 'source_name', colId: 'source_name', minWidth: 140, flex: 1,
           headerClass: 'ag-header-source', wrapText: false, editable: notStagedEditable,
-          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
+          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); }, 'bad-addr-cell': function(p) { return p.value && BAD_ADDR_RE.test(p.value); } }
         },
         { headerName: 'Src Addr', field: 'source_address', colId: 'source_address', minWidth: 200, flex: 2,
           headerClass: 'ag-header-source',
@@ -391,7 +392,7 @@ function initGrid() {
               }
               return container;
           },
-          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
+          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); }, 'bad-addr-cell': function(p) { return p.value && BAD_ADDR_RE.test(p.value); } }
         },
         { headerName: 'Src City', field: 'source_city', colId: 'source_city', width: 100,
           headerClass: 'ag-header-source', editable: notStagedEditable },
@@ -427,7 +428,7 @@ function initGrid() {
               }
               return container;
           },
-          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
+          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); }, 'bad-addr-cell': function(p) { return p.value && BAD_ADDR_RE.test(p.value); } }
         },
         { headerName: 'Src SSN', field: 'source_ssn', colId: 'source_ssn', width: 100,
           headerClass: 'ag-header-source' },
@@ -437,11 +438,11 @@ function initGrid() {
           headerClass: 'ag-header-dec' },
         { headerName: 'DEC Name', field: 'dec_name', colId: 'dec_name', minWidth: 140, flex: 1,
           headerClass: 'ag-header-dec', wrapText: false,
-          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
+          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); }, 'bad-addr-cell': function(p) { return p.value && BAD_ADDR_RE.test(p.value); } }
         },
         { headerName: 'DEC Addr', field: 'dec_address', colId: 'dec_address', minWidth: 140, flex: 1,
           headerClass: 'ag-header-dec', wrapText: false,
-          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); } }
+          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); }, 'bad-addr-cell': function(p) { return p.value && BAD_ADDR_RE.test(p.value); } }
         },
         { headerName: 'DEC City/St/Zip', colId: 'dec_csz', valueGetter: decCszValueGetter, width: 160,
           headerClass: 'ag-header-dec' },
@@ -502,6 +503,7 @@ function initGrid() {
         },
         singleClickEdit: true,
         onCellValueChanged: function(params) {
+            if (window._bulkProcessUpdate) return;
             var INLINE_TEXT_FIELDS = ['source_name', 'source_address_recomend', 'source_city', 'source_state', 'source_zip'];
             if (INLINE_TEXT_FIELDS.indexOf(params.colDef.field) !== -1) {
                 if (params.oldValue !== params.newValue) {
@@ -980,6 +982,8 @@ function filterByRec(rec) {
         $('#maxAddrScore').val('');
     }
     onExternalFilterChanged();
+    updateSaveBtn();
+    updateSelectionInfo();
 }
 
 function filterByStat(type) {
@@ -1009,6 +1013,8 @@ function clearFilters() {
     $('#quickFilterInput').val('');
     if (gridApi) gridApi.setGridOption('quickFilterText', '');
     onExternalFilterChanged();
+    updateSaveBtn();
+    updateSelectionInfo();
 }
 
 function refreshData() {
@@ -1029,8 +1035,9 @@ function refreshData() {
 
 function updateSelectionInfo() {
     var n = selectedRows.size;
+    var stagedMode = activeRecFilter.toUpperCase() === 'STAGED';
     $('#selectionInfo').text(n === 0 ? 'No records selected' : n + ' record(s) selected');
-    $('#bulkApproveBtn').prop('disabled', n === 0);
+    $('#bulkApproveBtn').prop('disabled', n === 0 || stagedMode);
 }
 
 // ── Address line counter (45-char/line soft limit) ──
@@ -1264,7 +1271,8 @@ function saveChanges() {
 
 function updateSaveBtn() {
     var btn = $('#saveChangesBtn');
-    btn.prop('disabled', pendingCount === 0);
+    var stagedMode = activeRecFilter.toUpperCase() === 'STAGED';
+    btn.prop('disabled', pendingCount === 0 || stagedMode);
     btn.find('.save-count').text(pendingCount > 0 ? ' (' + pendingCount + ')' : '');
 }
 
@@ -1614,4 +1622,126 @@ function doReplaceAll() {
             showToast('Replace failed: ' + (xhr.responseJSON ? xhr.responseJSON.error : 'Unknown error'), 'error');
         }
     });
+}
+
+// ── BA Config Editor ────────────────────────────────────────────────────────
+
+var _configDefaults = {};
+var _configModal = null;
+
+function openConfigModal() {
+    if (!_configModal) {
+        _configModal = new bootstrap.Modal(document.getElementById('configModal'));
+    }
+    $('#configModalBody').html('<div class="text-center text-muted py-4"><i class="fas fa-spinner fa-spin me-2"></i>Loading...</div>');
+    _configModal.show();
+
+    $.when(
+        $.getJSON('/api/ba_config/all'),
+        $.getJSON('/api/ba_config/defaults')
+    ).done(function(rowsResp, defaultsResp) {
+        var rows = rowsResp[0];
+        _configDefaults = defaultsResp[0];
+        _renderConfigModal(rows);
+    }).fail(function(xhr, textStatus, errorThrown) {
+        var msg = (xhr && xhr.responseJSON && xhr.responseJSON.error)
+            ? xhr.responseJSON.error
+            : (xhr && xhr.status ? 'HTTP ' + xhr.status + ': ' + (xhr.responseText || errorThrown) : errorThrown || textStatus || 'Unknown error');
+        console.error('Config load failed:', xhr && xhr.status, textStatus, errorThrown, xhr && xhr.responseText);
+        $('#configModalBody').html('<div class="alert alert-danger" style="font-size:0.82rem;white-space:pre-wrap;word-break:break-all">Failed to load config: ' + _escHtml(String(msg).substring(0, 500)) + '</div>');
+    });
+}
+
+function _renderConfigModal(rows) {
+    var groups = {};
+    rows.forEach(function(r) {
+        if (!groups[r.category]) groups[r.category] = [];
+        groups[r.category].push(r);
+    });
+
+    var html = '<table class="table table-sm table-bordered mb-0" style="font-size:0.85rem;">';
+    html += '<thead class="table-light"><tr><th>Category</th><th>Config Key</th><th style="width:180px">Value</th></tr></thead><tbody>';
+
+    Object.keys(groups).sort().forEach(function(cat) {
+        groups[cat].forEach(function(r) {
+            var hasDefault = _configDefaults.hasOwnProperty(r.config_key);
+            var indicator = hasDefault ? ' <span class="text-muted" title="Has default value" style="font-size:0.75em;">&#8635;</span>' : '';
+            var valLower = (r.config_value || '').toLowerCase();
+            var isBoolean = (valLower === 'true' || valLower === 'false');
+            var inputHtml;
+            if (isBoolean) {
+                inputHtml = '<select class="form-select form-select-sm config-val-input"' +
+                    ' data-category="' + _escHtml(r.category) + '"' +
+                    ' data-key="' + _escHtml(r.config_key) + '"' +
+                    ' data-original="' + _escHtml(r.config_value) + '">' +
+                    '<option value="true"' + (valLower === 'true' ? ' selected' : '') + '>true</option>' +
+                    '<option value="false"' + (valLower === 'false' ? ' selected' : '') + '>false</option>' +
+                    '</select>';
+            } else {
+                inputHtml = '<input type="text" class="form-control form-control-sm config-val-input"' +
+                    ' data-category="' + _escHtml(r.category) + '"' +
+                    ' data-key="' + _escHtml(r.config_key) + '"' +
+                    ' data-original="' + _escHtml(r.config_value) + '"' +
+                    ' value="' + _escHtml(r.config_value) + '">';
+            }
+            html += '<tr>' +
+                '<td class="text-muted" style="white-space:nowrap">' + _escHtml(r.category) + '</td>' +
+                '<td style="font-family:monospace">' + _escHtml(r.config_key) + indicator + '</td>' +
+                '<td>' + inputHtml + '</td>' +
+                '</tr>';
+        });
+    });
+
+    html += '</tbody></table>';
+    $('#configModalBody').html(html);
+}
+
+function revertConfigToDefaults() {
+    $('#configModalBody .config-val-input').each(function() {
+        var key = $(this).data('key');
+        if (_configDefaults.hasOwnProperty(key)) {
+            $(this).val(_configDefaults[key]);
+        }
+    });
+    showToast('Defaults loaded \u2014 click Save Changes to persist', 'info');
+}
+
+function saveConfigChanges() {
+    var changed = [];
+    $('#configModalBody .config-val-input').each(function() {
+        var val = $(this).val();
+        if (val !== String($(this).data('original'))) {
+            changed.push({
+                category:     $(this).data('category'),
+                config_key:   $(this).data('key'),
+                config_value: val
+            });
+        }
+    });
+
+    if (changed.length === 0) {
+        showToast('No changes to save', 'info');
+        return;
+    }
+
+    var promises = changed.map(function(row) {
+        return $.ajax({
+            url: '/api/ba_config/update',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify(row)
+        });
+    });
+
+    $.when.apply($, promises).done(function() {
+        showToast('Config saved (' + changed.length + ' value' + (changed.length !== 1 ? 's' : '') + ')', 'success');
+        if (_configModal) _configModal.hide();
+    }).fail(function(xhr) {
+        showToast('Save failed: ' + (xhr.responseJSON ? xhr.responseJSON.error : 'Unknown error'), 'error');
+    });
+}
+
+function _escHtml(str) {
+    if (str == null) return '';
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }

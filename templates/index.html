@@ -26,6 +26,9 @@
                 <button class="btn btn-outline-info btn-sm" onclick="openDevNotes()" title="Open Dev Notes">
                     <i class="fas fa-file-word"></i> Dev Notes
                 </button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="openConfigModal()" title="BA Config Settings">
+                    <i class="fas fa-sliders-h"></i> Config
+                </button>
                 <button class="btn btn-outline-warning btn-sm" data-bs-toggle="modal" data-bs-target="#helpModal" title="Help">
                     <i class="fas fa-question-circle"></i>
                 </button>
@@ -494,6 +497,30 @@
                 </div>
                 <div class="modal-footer py-2">
                     <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- BA Config Modal -->
+    <div class="modal fade" id="configModal" tabindex="-1" aria-labelledby="configModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header py-2">
+                    <h5 class="modal-title" id="configModalLabel"><i class="fas fa-sliders-h me-2"></i>BA Config Settings</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="configModalBody">
+                    <div class="text-center text-muted py-4"><i class="fas fa-spinner fa-spin me-2"></i>Loading...</div>
+                </div>
+                <div class="modal-footer py-2">
+                    <button type="button" class="btn btn-outline-warning btn-sm me-auto" onclick="revertConfigToDefaults()" title="Reset all known keys to hardcoded defaults (does not save automatically)">
+                        <i class="fas fa-undo me-1"></i>Revert to Defaults
+                    </button>
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary btn-sm" onclick="saveConfigChanges()">
+                        <i class="fas fa-save me-1"></i>Save Changes
+                    </button>
                 </div>
             </div>
         </div>
