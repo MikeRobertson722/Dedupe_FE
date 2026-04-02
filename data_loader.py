@@ -241,6 +241,16 @@ def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
     except Exception as e:
         print(f"  UPDATE_LOG column rename skipped: {e}")
 
+    # Ensure GRID_SETTINGS table exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS GRID_SETTINGS (
+            SETTING_KEY   VARCHAR(100)   NOT NULL,
+            SETTING_VALUE VARCHAR(65535) NOT NULL,
+            UPDATED_AT    TIMESTAMP_NTZ  DEFAULT CURRENT_TIMESTAMP(),
+            CONSTRAINT PK_GRID_SETTINGS PRIMARY KEY (SETTING_KEY)
+        )
+    """)
+
     # Ensure IMPORT_MERGE_STAGING table exists (mirrors source + metadata)
     staging_table = table.replace('MATCHES', 'STAGING')
     cursor.execute(f"""
@@ -525,3 +535,32 @@ def load_data(config: Dict[str, Any]) -> pd.DataFrame:
         return DataSource.load_from_snowflake(config)
 
     raise ValueError(f"Unknown source type: {source_type}. Supported: 'snowflake'")
+
+
+def save_grid_setting(config: Dict[str, Any], key: str, value: str) -> None:
+    """Upsert a single key/value row into GRID_SETTINGS."""
+    conn = get_snowflake_connection(config)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        MERGE INTO GRID_SETTINGS t
+        USING (SELECT %s AS k, %s AS v) s ON t.SETTING_KEY = s.k
+        WHEN MATCHED THEN UPDATE SET
+            t.SETTING_VALUE = s.v, t.UPDATED_AT = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN INSERT (SETTING_KEY, SETTING_VALUE)
+            VALUES (s.k, s.v)
+        """,
+        (key, value)
+    )
+    conn.commit()
+
+
+def load_grid_setting(config: Dict[str, Any], key: str) -> Optional[str]:
+    """Return the stored value for *key*, or None if not found."""
+    conn = get_snowflake_connection(config)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT SETTING_VALUE FROM GRID_SETTINGS WHERE SETTING_KEY = %s", (key,)
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None

@@ -16,6 +16,10 @@ var UNDO_MAX = 50;
 const DO_NOT_USE_RE = /do\s*n[o']?t\s*use|don['\u2019]t\s*use|d\.?n\.?u\.?(?!\w)/i;
 const BAD_ADDR_RE = /bad\s*addr(?:ess)?/i;
 
+// Grid settings persistence
+var _colStateSaveTimer = null;
+var _suppressFilterSave = false;
+
 // Preferred display order for recommendations
 const REC_ORDER = [
     'NEW BA AND NEW ADDRESS',
@@ -216,6 +220,7 @@ function onExternalFilterChanged() {
     updateSelectionInfo();
     gridApi.onFilterChanged();
     updateGridInfo();
+    if (!_suppressFilterSave) saveFilterState();
 }
 
 function updateGridInfo() {
@@ -301,13 +306,6 @@ function memoCellRenderer(params) {
     return '<span class="memo-text" data-row-id="' + params.data._row_id + '" style="font-size:0.75rem;cursor:pointer;" title="Click to edit">' + escaped + '</span>';
 }
 
-function actionsCellRenderer(params) {
-    var rid = params.data._row_id;
-    var staged = isStaged(params);
-    var editBtn = '<button class="btn btn-sm btn-outline-primary py-0 px-1" onclick="editRecord(' + rid + ')" title="Edit"><i class="fas fa-edit"></i></button> ';
-    var approveBtn = staged ? '' : '<button class="btn btn-sm btn-outline-success py-0 px-1" onclick="quickApprove(' + rid + ')" title="Approve"><i class="fas fa-check"></i></button>';
-    return editBtn + approveBtn;
-}
 
 function sourceIdValueGetter(params) {
     var d = params.data;
@@ -332,8 +330,69 @@ function decCodeValueGetter(params) {
     return sub ? code + '-' + sub : code;
 }
 
+// ── Grid settings persistence helpers ──
+function saveGridSetting(key, value) {
+    $.ajax({
+        url: '/api/grid_settings', method: 'POST', contentType: 'application/json',
+        data: JSON.stringify({ key: key, value: value }),
+        error: function(xhr) { console.warn('Grid setting save failed:', key, xhr.responseText); }
+    });
+}
+
+function saveColumnState() {
+    if (!gridApi) return;
+    saveGridSetting('column_state', gridApi.getColumnState());
+}
+
+function saveFilterState() {
+    saveGridSetting('filter_state', {
+        activeRecFilter: activeRecFilter,
+        ssnFilter:    $('#ssnFilter').val(),
+        minNameScore: $('#minNameScore').val(),
+        maxNameScore: $('#maxNameScore').val(),
+        minAddrScore: $('#minAddrScore').val(),
+        maxAddrScore: $('#maxAddrScore').val()
+    });
+}
+
+function applyColumnState(state) {
+    if (!gridApi || !state || !Array.isArray(state)) return;
+    try { gridApi.applyColumnState({ state: state, applyOrder: true }); }
+    catch (e) { console.warn('applyColumnState failed:', e); }
+}
+
+function applyFilterState(state) {
+    if (!state) return;
+    try {
+        _suppressFilterSave = true;
+        $('#ssnFilter').val(state.ssnFilter || '');
+        $('#minNameScore').val(state.minNameScore || '');
+        $('#maxNameScore').val(state.maxNameScore || '');
+        $('#minAddrScore').val(state.minAddrScore || '');
+        $('#maxAddrScore').val(state.maxAddrScore || '');
+        activeRecFilter = state.activeRecFilter || '';
+        onExternalFilterChanged();
+    } catch (e) {
+        console.warn('applyFilterState failed:', e);
+    } finally {
+        _suppressFilterSave = false;
+    }
+}
+
+function loadAndApplyGridSettings(onFilterStateDone) {
+    $.get('/api/grid_settings')
+        .done(function(data) {
+            applyColumnState(data.column_state);
+            onFilterStateDone(data.filter_state);
+        })
+        .fail(function() {
+            console.warn('Could not load grid settings');
+            onFilterStateDone(null);
+        });
+}
+
 // ── AG Grid init ──
-function initGrid() {
+function initGrid(savedColState, savedFilterState) {
     var columnDefs = [
         { headerName: 'UID', field: 'id', colId: 'uid', width: 60, hide: true },
         { headerName: 'SSN', field: 'ssn_match', colId: 'ssn_match', cellRenderer: ssnCellRenderer, width: 62 },
@@ -458,9 +517,7 @@ function initGrid() {
         { headerName: 'Name Normal', field: 'name_normal_detail', colId: 'name_normal_detail', width: 200, hide: true },
         { headerName: 'Addr Normal', field: 'address_normal_detail', colId: 'address_normal_detail', width: 200, hide: true },
         { headerName: 'Name Match', field: 'name_match_detail', colId: 'name_match_detail', width: 200, hide: true },
-        { headerName: 'Addr Match', field: 'addr_match_detail', colId: 'addr_match_detail', width: 200, hide: true },
-        { headerName: 'Actions', colId: 'actions', cellRenderer: actionsCellRenderer, width: 80,
-          sortable: false, filter: false, hide: true, pinned: 'right' }
+        { headerName: 'Addr Match', field: 'addr_match_detail', colId: 'addr_match_detail', width: 200, hide: true }
     ];
 
     var gridOptions = {
@@ -519,7 +576,26 @@ function initGrid() {
             }
         },
         onGridReady: function(params) {
-            loadGridData();
+            applyColumnState(savedColState);
+            loadGridData(savedFilterState);
+        },
+        onColumnResized: function(params) {
+            if (!params.finished) return;
+            clearTimeout(_colStateSaveTimer);
+            _colStateSaveTimer = setTimeout(saveColumnState, 800);
+        },
+        onColumnVisible: function() {
+            clearTimeout(_colStateSaveTimer);
+            _colStateSaveTimer = setTimeout(saveColumnState, 800);
+        },
+        onColumnMoved: function(params) {
+            if (params.finished === false) return;
+            clearTimeout(_colStateSaveTimer);
+            _colStateSaveTimer = setTimeout(saveColumnState, 800);
+        },
+        onSortChanged: function() {
+            clearTimeout(_colStateSaveTimer);
+            _colStateSaveTimer = setTimeout(saveColumnState, 800);
         },
         onPaginationChanged: function() {
             updateGridInfo();
@@ -538,12 +614,13 @@ function initGrid() {
     gridApi = agGrid.createGrid(gridDiv, gridOptions);
 }
 
-function loadGridData() {
+function loadGridData(savedFilterState) {
     fetch('/api/matches_all')
         .then(function(r) { return r.json(); })
         .then(function(data) {
             allRowData = prefillProcessField(data);
             gridApi.setGridOption('rowData', allRowData);
+            applyFilterState(savedFilterState || null);
             updateGridInfo();
         })
         .catch(function(err) {
@@ -552,20 +629,55 @@ function loadGridData() {
         });
 }
 
-function refreshGridData() {
+function refreshGridData(onDone) {
     fetch('/api/matches_all')
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            allRowData = prefillProcessField(data);
-            gridApi.setGridOption('rowData', allRowData);
+            var newRows = prefillProcessField(data);
+
+            // Build lookup of current rows for change detection
+            var oldById = {};
+            (allRowData || []).forEach(function(r) { oldById[r._row_id] = r; });
+
+            allRowData = newRows;
+
+            // For each changed row, call node.setData() directly — the most reliable
+            // AG Grid API for forcing a full cell repaint on a specific row node.
+            // applyTransaction/setGridOption can both fail to repaint custom cell
+            // renderers (memo, process) when getRowId is configured.
+            newRows.forEach(function(r) {
+                var old = oldById[r._row_id];
+                if (!old) return;
+                var hasChange = SR_TEXT_COLS.some(function(col) {
+                    return String(r[col] || '') !== String(old[col] || '');
+                });
+                if (hasChange) {
+                    var node = gridApi.getRowNode(String(r._row_id));
+                    if (node) node.setData(r);
+                }
+            });
+
             updateGridInfo();
+            if (onDone) {
+                requestAnimationFrame(function() {
+                    requestAnimationFrame(function() {
+                        onDone();
+                    });
+                });
+            }
         });
 }
 
 // ── Document ready ──
 $(document).ready(function() {
     editModal = new bootstrap.Modal(document.getElementById('editModal'));
-    $.get('/api/recommendations', function(recs) {
+    var recsReq     = $.get('/api/recommendations');
+    var settingsReq = $.get('/api/grid_settings').then(null, function() {
+        return { column_state: null, filter_state: null };
+    });
+    $.when(recsReq, settingsReq).done(function(recsResult, settingsResult) {
+        var recs     = recsResult[0];
+        var settings = settingsResult[0] || {};
         recommendationValues = sortByRecOrder(recs.slice());
         buildRecFilterDropdown(recommendationValues);
         recommendationValues.forEach(function(r) {
@@ -573,7 +685,7 @@ $(document).ready(function() {
         });
         $('#editRecommendation').append('<option value="PROCESSED">PROCESSED</option>');
         $('#editRecommendation').append('<option value="STAGED">STAGED</option>');
-        initGrid();
+        initGrid(settings.column_state, settings.filter_state);
         loadStats();
         loadStagingCount();
     });
@@ -1341,7 +1453,7 @@ var srMatchIdx = -1;  // current match index
 
 var SR_TEXT_COLS = [
     'source_name', 'source_address_recomend', 'source_city', 'source_state', 'source_zip',
-    'recommendation', 'how_to_process', 'memo', 'address_reason'
+    'how_to_process', 'memo', 'address_reason', 'recommendation'
 ];
 
 var srHighlightInterval = null;
@@ -1499,11 +1611,14 @@ function srHighlightMatch() {
     var m = srMatches[srMatchIdx];
     var node = gridApi.getRowNode(m.nodeId);
     if (!node) return;
-    // Ensure the column is visible and scroll current match into view
-    var colDef = gridApi.getColumnDef(m.col);
-    if (colDef && colDef.hide) {
+    // Ensure the column is visible and scroll current match into view.
+    // Check the live column object (.visible) rather than the static colDef.hide,
+    // because the user may have hidden a column at runtime via the column state.
+    var col = gridApi.getColumn(m.col);
+    if (col && !col.visible) {
         gridApi.setColumnVisible(m.col, true);
     }
+    gridApi.ensureColumnVisible(m.col, 'start');
     gridApi.ensureNodeVisible(node, 'middle');
     // Re-apply highlights (sr-highlight-current will move to the new match)
     setTimeout(srApplyHighlights, 100);
@@ -1546,19 +1661,69 @@ function srFindNext() {
     srUpdateInfo();
 }
 
+// Returns true if replacing `search` with `replace` in `cellVal` would produce a net change.
+// Used to pre-screen matches client-side before sending to the backend, avoiding pointless
+// round-trips for already-uppercase / already-matching values.
+function srWouldChange(cellVal, search, replace, caseSensitive) {
+    if (!cellVal) return false;
+    var s = caseSensitive ? cellVal : cellVal.toLowerCase();
+    var q = caseSensitive ? search  : search.toLowerCase();
+    if (s.indexOf(q) === -1) return false;
+    // Simulate the replacement and compare
+    var flags = caseSensitive ? 'g' : 'gi';
+    var escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    var newVal = cellVal.replace(new RegExp(escaped, flags), replace);
+    return newVal !== cellVal;
+}
+
 function srReplaceCurrent() {
     var search = $('#srSearch').val();
     var replace = $('#srReplace').val();
     if (!search) { $('#srMatchInfo').text('Enter search text.'); return; }
-    if (srMatches.length === 0 || srMatchIdx < 0) { srFindNext(); return; }
 
-    var m = srMatches[srMatchIdx];
+    // Ensure matches are built (may be stale if the debounce timer hasn't fired yet)
+    if (srMatches.length === 0) { srBuildMatches(); }
+    if (srMatches.length === 0) { srUpdateInfo(); return; }
+    if (srMatchIdx < 0) { srMatchIdx = 0; }
+
+    var caseSensitive = $('#srCaseSensitive').is(':checked');
+
+    // Advance past any matches where the replacement would produce no net change
+    // (e.g. search="Add", replace="ADD" on a cell that already reads "ADD").
+    // We do this client-side to avoid a round-trip for every no-op match.
+    var startIdx = srMatchIdx;
+    var m = null;
+    while (true) {
+        var candidate = srMatches[srMatchIdx];
+        if (!candidate) break;
+        var node = gridApi.getRowNode(candidate.nodeId);
+        var cellVal = (node && node.data) ? String(node.data[candidate.col] || '') : '';
+        if (srWouldChange(cellVal, search, replace, caseSensitive)) {
+            m = candidate;
+            break;
+        }
+        // This match is a no-op — advance to the next one
+        srMatchIdx = (srMatchIdx + 1) % srMatches.length;
+        if (srMatchIdx === startIdx) {
+            // Wrapped all the way around — every remaining match is a no-op
+            $('#srMatchInfo').text('No replaceable matches found (replacement text already present in all ' + srMatches.length + ' match' + (srMatches.length !== 1 ? 'es' : '') + ').');
+            srHighlightMatch();
+            return;
+        }
+    }
+
+    if (!m) { srUpdateInfo(); return; }
+
+    // Highlight the match we are about to replace so the user can see it
+    srHighlightMatch();
+    srUpdateInfo();
+
     $.ajax({
         url: '/api/search_replace', method: 'POST', contentType: 'application/json',
         data: JSON.stringify({
             search: search, replace: replace,
             column: m.col,
-            case_sensitive: $('#srCaseSensitive').is(':checked'),
+            case_sensitive: caseSensitive,
             mode: 'replace',
             row_ids: [m.rowId]
         }),
@@ -1566,23 +1731,49 @@ function srReplaceCurrent() {
             if (data.replaced > 0) {
                 pendingCount = data.pending_count || 0;
                 updateSaveBtn();
-                // Refresh just this row from server
-                refreshGridData();
                 loadStats();
-                // Rebuild matches and advance
+
+                // Stop the highlight interval so it doesn't fight with the cell update
+                if (srHighlightInterval) { clearInterval(srHighlightInterval); srHighlightInterval = null; }
+
+                // ── Immediate visual update ──
+                // Update the matched cell RIGHT NOW so the user can see the text
+                // change before the grid scrolls to the next match.
+                var replacedNode = gridApi.getRowNode(m.nodeId);
+                if (replacedNode) {
+                    var newData = Object.assign({}, replacedNode.data);
+                    var flags = caseSensitive ? 'g' : 'gi';
+                    var esc = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    newData[m.col] = String(replacedNode.data[m.col] || '').replace(new RegExp(esc, flags), replace);
+                    replacedNode.setData(newData);
+                }
+
+                var replacedIdx = srMatchIdx;
+
+                // Brief pause (600ms) so user can see the updated cell text, then advance
                 setTimeout(function() {
-                    srBuildMatches();
-                    if (srMatches.length === 0) {
-                        srMatchIdx = -1;
-                        srUpdateInfo();
-                    } else {
-                        if (srMatchIdx >= srMatches.length) srMatchIdx = 0;
-                        srHighlightMatch();
-                        srUpdateInfo();
-                    }
-                }, 300);
+                    srClearHighlight();
+                    refreshGridData(function() {
+                        srMatches = []; srMatchIdx = -1;
+                        srBuildMatches();
+                        if (srMatches.length === 0) {
+                            srUpdateInfo();
+                        } else {
+                            srMatchIdx = Math.min(replacedIdx, srMatches.length - 1);
+                            srHighlightMatch();
+                            srUpdateInfo();
+                        }
+                    });
+                }, 600);
             } else {
-                $('#srMatchInfo').text('No replacement made.');
+                // Backend made no change — advance to next match
+                if (srMatches.length > 0) {
+                    srMatchIdx = (srMatchIdx + 1) % srMatches.length;
+                    srHighlightMatch();
+                    srUpdateInfo();
+                } else {
+                    $('#srMatchInfo').text('No matches found.');
+                }
             }
         },
         error: function(xhr) {

@@ -16,7 +16,8 @@ load_dotenv(Path(__file__).parent / '.env')
 from data_loader import (
     load_data, get_snowflake_connection, merge_changes_to_snowflake,
     write_audit_log_to_snowflake, read_audit_log_from_snowflake,
-    ensure_snowflake_schema, count_staging_eligible, stage_approved_records
+    ensure_snowflake_schema, count_staging_eligible, stage_approved_records,
+    save_grid_setting, load_grid_setting
 )
 
 app = Flask(__name__)
@@ -627,6 +628,37 @@ def ba_config_update():
         return jsonify({'message': 'Updated'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/grid_settings')
+def get_grid_settings():
+    try:
+        col = load_grid_setting(DATA_CONFIG, 'column_state')
+        flt = load_grid_setting(DATA_CONFIG, 'filter_state')
+        return jsonify({
+            'column_state': json.loads(col) if col else None,
+            'filter_state': json.loads(flt) if flt else None,
+        })
+    except Exception as e:
+        print(f"grid_settings load error: {e}")
+        return jsonify({'column_state': None, 'filter_state': None})
+
+
+@app.route('/api/grid_settings', methods=['POST'])
+def post_grid_settings():
+    try:
+        data = request.json
+        key = data.get('key', '').strip()
+        value = data.get('value')
+        if key not in {'column_state', 'filter_state'}:
+            return jsonify({'error': f'Unknown key: {key}'}), 400
+        if value is None:
+            return jsonify({'error': 'value required'}), 400
+        save_grid_setting(DATA_CONFIG, key, json.dumps(value))
+        return jsonify({'success': True})
+    except Exception as e:
+        print(f"grid_settings save error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/search_replace', methods=['POST'])
