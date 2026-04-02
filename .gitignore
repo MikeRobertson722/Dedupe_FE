@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+
+# Temp exports
 temp_export.xlsx
 temp_export_selected.xlsx
 
@@ -7,3 +9,24 @@ temp_export_selected.xlsx
 config.json
 datasources.json
 .env
+
+# Data files
+MATCHES_TO_STAGING.xlsx
+SOURCE_ADDRS.csv
+SOURCE_ADDRS_CLEANED.xlsx
+
+# Screenshot / debug artifacts
+debug_screenshots/
+test_screenshots/
+tests/screenshots/
+
+# One-off debug scripts
+investigate_replace.py
+verify_replace_final.py
+verify_replace_zoomed.py
+
+# Temp Word lock files
+~$*
+
+# Pyre type checker
+.pyre_configuration
