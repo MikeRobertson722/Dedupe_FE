@@ -153,10 +153,27 @@ def _load_ba_config():
     return _ba_config_cache or {}
 
 
+def _get_source_company_name():
+    """Read SOURCE_COMPANY_NAME from BA_CONFIG (GENERAL), fall back to env var."""
+    try:
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT CONFIG_VALUE FROM BA_CONFIG "
+            "WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME' LIMIT 1"
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        pass
+    return DATA_CONFIG.get('source_company_name', 'Source')
+
+
 @app.route('/')
 def index():
     return render_template('index.html',
-                           source_company_name=DATA_CONFIG.get('source_company_name', 'Source'))
+                           source_company_name=_get_source_company_name())
 
 
 @app.route('/api/recommendations')
