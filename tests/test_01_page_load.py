@@ -16,11 +16,11 @@ class TestPageLoad:
 
     @pytest.mark.smoke
     def test_page_title(self, app_page: Page):
-        expect(app_page).to_have_title("BA/Address Import -  Source (Enertia) -> Target: DEC (Enertia)")
+        expect(app_page).to_have_title("AssociateIQ -  Source (Enertia) -> Target: DEC (Enertia)")
 
     def test_navbar_present(self, app_page: Page):
         expect(app_page.locator(NAVBAR)).to_be_visible()
-        expect(app_page.locator(NAVBAR)).to_contain_text("BA/Address Import")
+        expect(app_page.locator(NAVBAR)).to_contain_text("AssociateIQ")
 
     @pytest.mark.smoke
     def test_grid_renders_with_data(self, app_page: Page):
