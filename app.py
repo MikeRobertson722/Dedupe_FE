@@ -46,6 +46,7 @@ DATA_CONFIG = {
     'schema': os.environ.get('SNOWFLAKE_SCHEMA', 'ba_process'),
     'warehouse': os.environ.get('SNOWFLAKE_WAREHOUSE', ''),
     'table': os.environ.get('SNOWFLAKE_TABLE', 'import_merge_matches'),
+    'source_company_name': os.environ.get('SOURCE_COMPANY_NAME', 'Source'),
 }
 
 if not DATA_CONFIG['account']:
@@ -154,7 +155,8 @@ def _load_ba_config():
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html',
+                           source_company_name=DATA_CONFIG.get('source_company_name', 'Source'))
 
 
 @app.route('/api/recommendations')
