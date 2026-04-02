@@ -179,6 +179,17 @@ function toggleAllCols(show) {
     });
 }
 
+function syncColVisDropdown() {
+    // Sync checkboxes to the grid's actual runtime visibility state.
+    // Called after applyColumnState() restores saved state so the
+    // Show/Hide panel matches what is actually on screen.
+    if (!gridApi) return;
+    $('.col-vis-check').each(function() {
+        var col = gridApi.getColumn($(this).data('col-name'));
+        if (col) $(this).prop('checked', col.visible);
+    });
+}
+
 // ── External filter state ──
 function isExternalFilterPresent() {
     // Always present because STAGED records are hidden by default
@@ -577,6 +588,7 @@ function initGrid(savedColState, savedFilterState) {
         },
         onGridReady: function(params) {
             applyColumnState(savedColState);
+            syncColVisDropdown();
             loadGridData(savedFilterState);
         },
         onColumnResized: function(params) {
@@ -585,6 +597,7 @@ function initGrid(savedColState, savedFilterState) {
             _colStateSaveTimer = setTimeout(saveColumnState, 800);
         },
         onColumnVisible: function() {
+            syncColVisDropdown();
             clearTimeout(_colStateSaveTimer);
             _colStateSaveTimer = setTimeout(saveColumnState, 800);
         },
