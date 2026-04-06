@@ -240,10 +240,8 @@ def index():
 def get_recommendations():
     """Get distinct recommendation values from the data"""
     try:
-        df = load_cached_data()
-        if df.empty:
-            return jsonify([])
-        values = sorted(df['recommendation'].dropna().unique().tolist())
+        counts = get_bucket_counts(DATA_CONFIG)
+        values = sorted(counts.keys())
         return jsonify(values)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -251,112 +249,127 @@ def get_recommendations():
 
 @app.route('/api/matches')
 def get_matches():
-    """Server-side DataTables endpoint"""
+    """Server-side DataTables endpoint — hybrid hot-cache / SQL mode."""
     try:
-        df = load_cached_data()
-
-        if df.empty:
-            return jsonify({'data': [], 'recordsTotal': 0, 'recordsFiltered': 0})
-
-        records_total = len(df)
-
-        # DataTables parameters
         draw = request.args.get('draw', type=int, default=1)
         start = request.args.get('start', type=int, default=0)
         length = request.args.get('length', type=int, default=25)
-        search_value = request.args.get('search[value]', default='')
 
-        # Custom filters
         recommendation_filter = request.args.get('recommendation', default='')
         ssn_filter = request.args.get('ssn_match', default='')
         min_name_score = request.args.get('min_name_score', type=float, default=None)
         max_name_score = request.args.get('max_name_score', type=float, default=None)
         min_addr_score = request.args.get('min_addr_score', type=float, default=None)
         max_addr_score = request.args.get('max_addr_score', type=float, default=None)
-
-        # Apply filters
-        mask = pd.Series(True, index=df.index)
-
-        if recommendation_filter:
-            rec_values = [v.strip() for v in recommendation_filter.split(',') if v.strip()]
-            if rec_values:
-                mask &= df['recommendation'].isin(rec_values)
-
-        if ssn_filter == 'yes':
-            mask &= df['ssn_match'] == 100
-        elif ssn_filter == 'no':
-            mask &= df['ssn_match'] == 0
-        elif ssn_filter == 'partial':
-            mask &= (df['ssn_match'] > 0) & (df['ssn_match'] < 100)
-
-        if min_name_score is not None:
-            mask &= df['name_score'] >= min_name_score
-        if max_name_score is not None:
-            mask &= df['name_score'] <= max_name_score
-
-        if min_addr_score is not None:
-            mask &= df['address_score'] >= min_addr_score
-        if max_addr_score is not None:
-            mask &= df['address_score'] <= max_addr_score
-
-        df_filtered = df[mask]
-
-        # Global search across all columns (vectorized per-column, much faster than row-wise apply)
-        if search_value:
-            search_mask = pd.Series(False, index=df_filtered.index)
-            for col in df_filtered.columns:
-                search_mask |= df_filtered[col].astype(str).str.contains(
-                    search_value, case=False, na=False
-                )
-            df_filtered = df_filtered[search_mask]
-
-        records_filtered = len(df_filtered)
-
-        # Sorting (use column data name so it works after ColReorder drag)
-        order_col = request.args.get('order[0][column]', type=int, default=None)
+        search_value = request.args.get('search[value]', default='').strip()
+        order_col_idx = request.args.get('order[0][column]', type=int, default=None)
         order_dir = request.args.get('order[0][dir]', default='asc')
 
-        sortable_fields = {
-            'id', 'ssn_match', 'name_score', 'address_score', 'recommendation',
-            'source_name', 'source_address', 'source_city', 'source_id',
-            'dec_name', 'dec_address', 'dec_city', 'dec_hdrcode', 'dec_address_looked_up',
-            'jib', 'rev', 'vendor', 'how_to_process', 'memo'
-        }
-        if order_col is not None:
-            col_data = request.args.get(f'columns[{order_col}][data]', default=None)
-            if col_data in sortable_fields:
-                df_filtered = df_filtered.sort_values(
-                    col_data, ascending=(order_dir == 'asc'), na_position='last'
-                )
+        sort_col = None
+        if order_col_idx is not None:
+            col_data = request.args.get(f'columns[{order_col_idx}][data]', default=None)
+            if col_data in {
+                'id', 'ssn_match', 'name_score', 'address_score', 'recommendation',
+                'source_name', 'source_address', 'source_city', 'source_id',
+                'dec_name', 'dec_address', 'dec_city', 'dec_hdrcode',
+                'dec_address_looked_up', 'jib', 'rev', 'vendor', 'how_to_process', 'memo',
+            }:
+                sort_col = col_data
 
-        # Paginate (-1 means all)
-        df_page = df_filtered.iloc[start:] if length == -1 else df_filtered.iloc[start:start + length]
+        # Decide mode: hot cache only for single-bucket filter with no global search
+        rec_values = [v.strip() for v in recommendation_filter.split(',') if v.strip()]
+        single_bucket = len(rec_values) == 1
+        use_cache = single_bucket and not search_value
 
-        # Only send columns the frontend needs (skip internal/unused fields)
-        needed_cols = [
-            'id', 'ssn_match', 'name_score', 'address_score', 'nameaddrscore', 'recommendation',
-            'how_to_process', 'source_id', 'source_addrseq', 'source_name',
-            'source_address', 'source_city', 'source_state', 'source_zip', 'source_ssn',
-            'source_address_recomend',
-            'dec_ssn', 'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
-            'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
-            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id',
-            'name_normal_detail', 'address_normal_detail', 'name_match_detail', 'addr_match_detail'
-        ]
-        available = [c for c in needed_cols if c in df_page.columns]
-        df_out = df_page[available].fillna('')
-        df_out = df_out.copy()
-        df_out['_row_id'] = df_page.index
+        cache_mode = 'sql'
+        data = []
+        records_total = 0
+        records_filtered = 0
 
-        # Fast-serialize: use to_dict + json.dumps
-        data = df_out.to_dict('records')
+        if use_cache:
+            cache = _get_or_load_bucket_cache(rec_values[0])
+            if cache is not None:
+                cache_mode = 'cached'
+                df = cache.df
+
+                records_total = len(df)
+
+                # Apply sub-filters in pandas
+                mask = pd.Series(True, index=df.index)
+                if ssn_filter == 'yes':
+                    mask &= df['ssn_match'] == 100
+                elif ssn_filter == 'no':
+                    mask &= df['ssn_match'] == 0
+                elif ssn_filter == 'partial':
+                    mask &= (df['ssn_match'] > 0) & (df['ssn_match'] < 100)
+                if min_name_score is not None:
+                    mask &= df['name_score'] >= min_name_score
+                if max_name_score is not None:
+                    mask &= df['name_score'] <= max_name_score
+                if min_addr_score is not None:
+                    mask &= df['address_score'] >= min_addr_score
+                if max_addr_score is not None:
+                    mask &= df['address_score'] <= max_addr_score
+
+                df_filtered = df[mask]
+
+                if sort_col and sort_col in df_filtered.columns:
+                    df_filtered = df_filtered.sort_values(
+                        sort_col, ascending=(order_dir == 'asc'), na_position='last'
+                    )
+
+                records_filtered = len(df_filtered)
+                df_page = (df_filtered.iloc[start:]
+                           if length == -1
+                           else df_filtered.iloc[start:start + length])
+
+                needed_cols = [
+                    'id', 'ssn_match', 'name_score', 'address_score', 'nameaddrscore',
+                    'recommendation', 'how_to_process', 'source_id', 'source_addrseq',
+                    'source_name', 'source_address', 'source_city', 'source_state',
+                    'source_zip', 'source_ssn', 'source_address_recomend',
+                    'dec_ssn', 'dec_name', 'dec_address', 'dec_city', 'dec_state',
+                    'dec_zip', 'dec_hdrcode', 'dec_addrsubcode', 'dec_contact',
+                    'dec_address_looked_up', 'address_reason', 'jib', 'rev', 'vendor',
+                    'memo', 'is_trust', 'run_id',
+                    'name_normal_detail', 'address_normal_detail',
+                    'name_match_detail', 'addr_match_detail',
+                ]
+                available = [c for c in needed_cols if c in df_page.columns]
+                df_out = df_page[available].fillna('').copy()
+                df_out['_row_id'] = df_page['id']
+                data = df_out.to_dict('records')
+
+        if cache_mode == 'sql':
+            filters = {
+                'recommendation': recommendation_filter,
+                'ssn_filter': ssn_filter,
+                'min_name_score': min_name_score,
+                'max_name_score': max_name_score,
+                'min_addr_score': min_addr_score,
+                'max_addr_score': max_addr_score,
+                'search': search_value,
+            }
+            rows, records_total, records_filtered = query_snowflake_page(
+                config=DATA_CONFIG,
+                filters=filters,
+                sort_col=sort_col,
+                sort_dir=order_dir,
+                start=start,
+                length=length,
+            )
+            data = [{k: ('' if v is None else v) for k, v in r.items()} for r in rows]
+            for row in data:
+                row['_row_id'] = row.get('id')
 
         result = json.dumps({
             'draw': draw,
             'recordsTotal': records_total,
             'recordsFiltered': records_filtered,
-            'data': data
+            'data': data,
+            'cache_mode': cache_mode,
         }, ensure_ascii=False, default=str)
+
         return Response(result, mimetype='application/json')
 
     except Exception as e:
@@ -366,24 +379,39 @@ def get_matches():
 @app.route('/api/stats')
 def get_stats():
     try:
-        df = load_cached_data()
-        if df.empty:
-            return jsonify({'error': 'No data available'}), 404
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+
+        cursor.execute(f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN SSN_MATCH = 100 THEN 1 ELSE 0 END) AS ssn_perfect,
+                SUM(CASE WHEN SSN_MATCH > 0 AND SSN_MATCH < 100 THEN 1 ELSE 0 END) AS ssn_partial,
+                SUM(CASE WHEN SSN_MATCH = 0 THEN 1 ELSE 0 END) AS ssn_none,
+                AVG(NAME_SCORE) AS avg_name,
+                AVG(ADDRESS_SCORE) AS avg_addr
+            FROM {table}
+        """)
+        row = cursor.fetchone()
+        total, ssn_perfect, ssn_partial, ssn_none, avg_name, avg_addr = row
+
+        cursor.execute(
+            f"SELECT RECOMMENDATION, COUNT(*) FROM {table} GROUP BY RECOMMENDATION"
+        )
+        rec_counts = {r[0]: r[1] for r in cursor.fetchall() if r[0]}
 
         stats = {
-            'total_records': len(df),
-            'recommendations': df['recommendation'].value_counts().to_dict(),
-            'avg_name_score': round(float(df['name_score'].mean()), 1),
-            'avg_address_score': round(float(df['address_score'].mean()), 1),
-            'ssn_perfect_matches': int((df['ssn_match'] == 100).sum()),
-            'ssn_partial_matches': int(((df['ssn_match'] > 0) & (df['ssn_match'] < 100)).sum()),
-            'ssn_no_match': int((df['ssn_match'] == 0).sum()),
+            'total_records': int(total or 0),
+            'recommendations': rec_counts,
+            'avg_name_score': round(float(avg_name or 0), 1),
+            'avg_address_score': round(float(avg_addr or 0), 1),
+            'ssn_perfect_matches': int(ssn_perfect or 0),
+            'ssn_partial_matches': int(ssn_partial or 0),
+            'ssn_no_match': int(ssn_none or 0),
+            'rec_config': _load_ba_config(),
         }
-
-        stats['rec_config'] = _load_ba_config()
-
         return jsonify(stats)
-
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -954,8 +982,15 @@ def save_changes():
 def staging_count():
     """Return the number of records eligible for staging."""
     try:
-        df = load_cached_data()
-        count = count_staging_eligible(df)
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        cursor.execute(
+            f"SELECT COUNT(*) FROM {table} "
+            f"WHERE UPPER(RECOMMENDATION) = 'APPROVED' "
+            f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != ''"
+        )
+        count = int(cursor.fetchone()[0])
         return jsonify({'count': count})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -996,13 +1031,18 @@ def stage_approved():
 
 @app.route('/api/reload', methods=['POST'])
 def reload_data():
-    """Force reload data from the configured source (clears in-memory cache)"""
+    """Invalidate the bucket cache so the next request reloads from Snowflake."""
     try:
-        df = load_cached_data(force_reload=True)
+        _invalidate_cache()
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        cursor.execute(f'SELECT COUNT(*) FROM {table}')
+        total = int(cursor.fetchone()[0])
         return jsonify({
             'success': True,
-            'records': len(df),
-            'message': f'Reloaded {len(df):,} records from {DATA_CONFIG.get("name", DATA_CONFIG.get("source_type", "source"))}'
+            'records': total,
+            'message': f'Cache cleared. {total:,} total records in Snowflake.',
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
