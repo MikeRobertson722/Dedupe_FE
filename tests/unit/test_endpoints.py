@@ -1,7 +1,10 @@
 """Unit tests for Task 9 API endpoints."""
 import json
 import unittest
+import uuid
 from unittest.mock import patch
+import pandas as pd
+from data_loader import BucketCache
 
 # Set the environment so app can be imported without a real Snowflake connection
 import os
@@ -47,9 +50,6 @@ class TestCacheStatusEndpoint(unittest.TestCase):
         self.assertEqual(data['row_count'], 0)
 
     def test_cached_mode_returns_bucket_info(self):
-        import datetime
-        import pandas as pd
-        from data_loader import BucketCache
         df = pd.DataFrame({'id': [1, 2, 3], 'recommendation': ['REVIEW'] * 3})
         cache = BucketCache('REVIEW', df)
         with patch.object(_app, '_bucket_cache', cache):
@@ -73,6 +73,7 @@ class TestUserInfoEndpoint(unittest.TestCase):
         data = json.loads(resp.data)
         self.assertTrue(data['is_new'])
         self.assertIsNotNone(data['user_id'])
+        uuid.UUID(data['user_id'])  # raises ValueError if not a valid UUID4
         # Cookie should be set
         self.assertIn('user_id', resp.headers.get('Set-Cookie', ''))
 
@@ -83,6 +84,7 @@ class TestUserInfoEndpoint(unittest.TestCase):
         data = json.loads(resp.data)
         self.assertFalse(data['is_new'])
         self.assertEqual(data['user_id'], 'existing-uuid-123')
+        self.assertNotIn('user_id', resp.headers.get('Set-Cookie', ''))
 
     def test_user_name_cookie_returned(self):
         self.client.set_cookie('user_id', 'uid-123')
