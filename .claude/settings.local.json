@@ -18,7 +18,11 @@
       "Bash(git -C /c/ClaudeMain/BA_Review_App config --local -l)",
       "Bash(git -C /c/ClaudeMain/BA_Review_App remote -v)",
       "Bash(git -C /c/ClaudeMain/BA_Review_App config --file .gitmodules --name-only --get-regexp path)",
-      "Bash(git -C /c/ClaudeMain/BA_Review_App log --all --oneline)"
+      "Bash(git -C /c/ClaudeMain/BA_Review_App log --all --oneline)",
+      "Bash(python3:*)",
+      "Bash(powershell -command \"Get-Process chrome | Select-Object Id, MainWindowTitle\")",
+      "Skill(update-config)",
+      "Bash(ls:*)"
     ]
   },
   "enabledPlugins": {
