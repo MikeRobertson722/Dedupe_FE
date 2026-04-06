@@ -582,7 +582,8 @@ def bulk_update():
         with _bucket_cache_lock:
             if _bucket_cache is not None:
                 for b in batch:
-                    _bucket_cache.update_row(b['record_id'], 'recommendation', new_recommendation)
+                    for field_name, (_, new_val) in b['fields'].items():
+                        _bucket_cache.update_row(b['record_id'], field_name, new_val)
 
         return jsonify({'success': True, 'updated': len(batch)})
 
@@ -627,6 +628,25 @@ def bulk_field_update():
             }
             for rec in records_in
         ]
+
+        # Filter out STAGED records
+        ids_to_check = [b['record_id'] for b in batch]
+        if ids_to_check:
+            conn = get_snowflake_connection(DATA_CONFIG)
+            cursor = conn.cursor()
+            table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+            placeholders = ', '.join(['%s'] * len(ids_to_check))
+            cursor.execute(
+                f"SELECT ID FROM {table} WHERE ID IN ({placeholders}) "
+                f"AND UPPER(RECOMMENDATION) = 'STAGED'",
+                ids_to_check,
+            )
+            staged_ids = {row[0] for row in cursor.fetchall()}
+            cursor.close()
+            batch = [b for b in batch if b['record_id'] not in staged_ids]
+
+        if not batch:
+            return jsonify({'success': True, 'updated': 0})
 
         user_id, user_name = _get_user_identity()
         affected = save_records_batch(DATA_CONFIG, batch, user_id=user_id, user_name=user_name)
@@ -831,42 +851,44 @@ def search_replace():
         user_id, user_name = _get_user_identity()
 
         total_replaced = 0
-        for field, db_col in col_map.items():
-            if case_sensitive:
-                replace_sql = f"REPLACE({db_col}, %s, %s)"
-                col_params = [search, replace]
-            else:
-                replace_sql = f"REGEXP_REPLACE({db_col}, %s, %s, 1, 0, 'i')"
-                col_params = [_re.escape(search), replace]
+        try:
+            for field, db_col in col_map.items():
+                if case_sensitive:
+                    replace_sql = f"REPLACE({db_col}, %s, %s)"
+                    col_params = [search, replace]
+                else:
+                    replace_sql = f"REGEXP_REPLACE({db_col}, %s, %s, 1, 0, 'i')"
+                    col_params = [_re.escape(search), replace]
 
-            cursor.execute(
-                f"UPDATE {table} SET {db_col} = {replace_sql} "
-                f"WHERE ({db_col} {ilike_op} %s){id_where} "
-                f"AND UPPER(RECOMMENDATION) != 'STAGED'",
-                col_params + [f'%{search}%'] + id_params,
-            )
-            total_replaced += cursor.rowcount
+                cursor.execute(
+                    f"UPDATE {table} SET {db_col} = {replace_sql} "
+                    f"WHERE ({db_col} {ilike_op} %s){id_where} "
+                    f"AND UPPER(RECOMMENDATION) != 'STAGED'",
+                    col_params + [f'%{search}%'] + id_params,
+                )
+                total_replaced += cursor.rowcount
 
-            # Update hot cache for modified rows
-            with _bucket_cache_lock:
-                if _bucket_cache is not None:
-                    cache_col = field  # pandas column name
-                    if cache_col in _bucket_cache.df.columns:
-                        ser = _bucket_cache.df[cache_col].astype(str).fillna('')
-                        if case_sensitive:
-                            mask = ser.str.contains(search, case=True, na=False, regex=False)
-                            _bucket_cache.df.loc[mask, cache_col] = ser[mask].str.replace(
-                                search, replace, regex=False
-                            )
-                        else:
-                            mask = ser.str.contains(search, case=False, na=False, regex=False)
-                            _bucket_cache.df.loc[mask, cache_col] = ser[mask].str.replace(
-                                _re.escape(search), replace, case=False, regex=True
-                            )
+                # Update hot cache for modified rows
+                with _bucket_cache_lock:
+                    if _bucket_cache is not None:
+                        cache_col = field  # pandas column name
+                        if cache_col in _bucket_cache.df.columns:
+                            ser = _bucket_cache.df[cache_col].astype(str).fillna('')
+                            if case_sensitive:
+                                mask = ser.str.contains(search, case=True, na=False, regex=False)
+                                _bucket_cache.df.loc[mask, cache_col] = ser[mask].str.replace(
+                                    search, replace, regex=False
+                                )
+                            else:
+                                mask = ser.str.contains(search, case=False, na=False, regex=False)
+                                _bucket_cache.df.loc[mask, cache_col] = ser[mask].str.replace(
+                                    _re.escape(search), replace, case=False, regex=True
+                                )
 
-        conn.commit()
-        cursor.close()
-        return jsonify({'replaced': total_replaced, 'rows': total_replaced})
+            conn.commit()
+            return jsonify({'replaced': total_replaced, 'rows': total_replaced})
+        finally:
+            cursor.close()
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
