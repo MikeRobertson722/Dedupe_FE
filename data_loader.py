@@ -296,6 +296,20 @@ def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
     except Exception as e:
         print(f"  UPDATE_LOG column rename skipped: {e}")
 
+    # Add USER_ID and USER_NAME columns to UPDATE_LOG if missing
+    if 'user_id' not in log_cols:
+        try:
+            cursor.execute("ALTER TABLE UPDATE_LOG ADD COLUMN USER_ID VARCHAR")
+            print("  Added USER_ID to UPDATE_LOG")
+        except Exception as e:
+            print(f"  Adding USER_ID to UPDATE_LOG skipped: {e}")
+    if 'user_name' not in log_cols:
+        try:
+            cursor.execute("ALTER TABLE UPDATE_LOG ADD COLUMN USER_NAME VARCHAR")
+            print("  Added USER_NAME to UPDATE_LOG")
+        except Exception as e:
+            print(f"  Adding USER_NAME to UPDATE_LOG skipped: {e}")
+
     # Ensure GRID_SETTINGS table exists
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS GRID_SETTINGS (
@@ -753,10 +767,13 @@ def write_audit_log_to_snowflake(
     """
     Batch-insert audit log entries to Snowflake UPDATE_LOG table.
 
-    Args:
-        config: Snowflake connection config
-        log_entries: List of (source_id, source_ssn, field_name, old_value, new_value, updated_at)
-        cursor: Optional shared cursor (caller manages commit)
+    Each entry in log_entries must be a tuple of:
+        (source_id, source_ssn, field_name, old_value, new_value, updated_at)
+    OR the extended form:
+        (source_id, source_ssn, field_name, old_value, new_value, updated_at,
+         user_id, user_name)
+
+    Both forms are accepted for backward compatibility.
     """
     if not log_entries:
         return
@@ -765,10 +782,21 @@ def write_audit_log_to_snowflake(
     if own_cursor:
         conn = get_snowflake_connection(config)
         cursor = conn.cursor()
+
+    # Normalise all entries to 8-tuples
+    normalised = []
+    for entry in log_entries:
+        if len(entry) == 6:
+            normalised.append(entry + (None, None))
+        else:
+            normalised.append(entry)
+
     cursor.executemany(
-        """INSERT INTO UPDATE_LOG (SOURCE_ID, SOURCE_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE, UPDATED_AT)
-           VALUES (%s, %s, %s, %s, %s, %s)""",
-        log_entries
+        """INSERT INTO UPDATE_LOG
+               (SOURCE_ID, SOURCE_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE,
+                UPDATED_AT, USER_ID, USER_NAME)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+        normalised,
     )
     if own_cursor:
         conn.commit()

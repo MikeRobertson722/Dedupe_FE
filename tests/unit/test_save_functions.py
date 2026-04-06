@@ -88,3 +88,18 @@ def test_save_record_maps_source_address_recomend():
     update_sql = next(s for s in executed if 'UPDATE' in s.upper())
     assert 'SOURCE_ADDRESS' in update_sql.upper()
     assert 'SOURCE_ADDRESS_RECOMEND' not in update_sql.upper()
+
+
+def test_write_audit_log_includes_user_id_and_user_name():
+    """write_audit_log_to_snowflake must accept 8-tuple entries with user_id/user_name."""
+    from data_loader import write_audit_log_to_snowflake
+    from datetime import datetime
+    conn, cursor = _mock_conn()
+    with patch('data_loader.get_snowflake_connection', return_value=conn):
+        write_audit_log_to_snowflake(
+            config={'table': 'import_merge_matches'},
+            log_entries=[('S1', 'SSN1', 'recommendation', 'REVIEW', 'APPROVED',
+                          datetime.now(), 'uuid-abc', 'Alice')],
+        )
+    calls = [str(c) for c in cursor.executemany.call_args_list]
+    assert any('USER_ID' in c.upper() or 'USER_NAME' in c.upper() for c in calls)
