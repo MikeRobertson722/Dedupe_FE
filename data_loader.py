@@ -318,6 +318,150 @@ def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
     conn.commit()
 
 
+def get_bucket_counts(config: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Return a dict of {recommendation_value: row_count} for all buckets.
+    Uses a single GROUP BY query — fast even on 2M rows.
+    """
+    table = config.get('table', 'import_merge_matches').upper()
+    conn = get_snowflake_connection(config)
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT RECOMMENDATION, COUNT(*) AS CNT "
+        f"FROM {table} "
+        f"GROUP BY RECOMMENDATION"
+    )
+    return {row[0]: int(row[1]) for row in cursor.fetchall() if row[0] is not None}
+
+
+# Columns the frontend grid needs — used for SELECT projection
+_GRID_COLUMNS = [
+    'ID', 'SSN_MATCH', 'NAME_SCORE', 'ADDRESS_SCORE', 'NAMEADDRSCORE',
+    'RECOMMENDATION', 'HOW_TO_PROCESS', 'SOURCE_ID', 'SOURCE_ADDRSEQ',
+    'SOURCE_NAME', 'SOURCE_ADDRESS', 'SOURCE_CITY', 'SOURCE_STATE',
+    'SOURCE_ZIP', 'SOURCE_SSN', 'SOURCE_ADDRESS_RECOMEND',
+    'DEC_SSN', 'DEC_NAME', 'DEC_ADDRESS', 'DEC_CITY', 'DEC_STATE',
+    'DEC_ZIP', 'DEC_HDRCODE', 'DEC_ADDRSUBCODE', 'DEC_CONTACT',
+    'DEC_ADDRESS_LOOKED_UP', 'ADDRESS_REASON', 'JIB', 'REV', 'VENDOR',
+    'MEMO', 'IS_TRUST', 'RUN_ID',
+    'NAME_NORMAL_DETAIL', 'ADDRESS_NORMAL_DETAIL',
+    'NAME_MATCH_DETAIL', 'ADDR_MATCH_DETAIL',
+]
+
+# Columns safe to sort by (prevents SQL injection via ORDER BY)
+_SORTABLE_COLS = {
+    'id', 'ssn_match', 'name_score', 'address_score', 'recommendation',
+    'source_name', 'source_address', 'source_city', 'source_id',
+    'dec_name', 'dec_address', 'dec_city', 'dec_hdrcode',
+    'dec_address_looked_up', 'jib', 'rev', 'vendor', 'how_to_process', 'memo',
+}
+
+
+def query_snowflake_page(
+    config: Dict[str, Any],
+    filters: Dict[str, Any],
+    sort_col: Optional[str],
+    sort_dir: str,
+    start: int,
+    length: int,
+) -> Tuple[List[dict], int, int]:
+    """
+    Run a paginated SQL query against Snowflake.
+
+    Args:
+        config:    Snowflake config dict
+        filters:   Dict of active filter values — keys:
+                     'recommendation' (str, comma-separated or single)
+                     'ssn_filter'     ('yes'|'no'|'partial')
+                     'min_name_score', 'max_name_score'  (float)
+                     'min_addr_score', 'max_addr_score'  (float)
+                     'search'         (str, global text search)
+        sort_col:  Column name to sort by (None = no sort)
+        sort_dir:  'asc' or 'desc'
+        start:     Row offset (0-based)
+        length:    Page size (-1 = all)
+
+    Returns:
+        (rows_as_dicts, total_count, filtered_count)
+    """
+    table = config.get('table', 'import_merge_matches').upper()
+    conn = get_snowflake_connection(config)
+    cursor = conn.cursor()
+
+    # --- Build WHERE clause ---
+    conditions: List[str] = []
+    params: List[Any] = []
+
+    rec = filters.get('recommendation', '')
+    if rec:
+        rec_values = [v.strip() for v in rec.split(',') if v.strip()]
+        if len(rec_values) == 1:
+            conditions.append('RECOMMENDATION = %s')
+            params.append(rec_values[0])
+        elif rec_values:
+            placeholders = ', '.join(['%s'] * len(rec_values))
+            conditions.append(f'RECOMMENDATION IN ({placeholders})')
+            params.extend(rec_values)
+
+    ssn_filter = filters.get('ssn_filter', '')
+    if ssn_filter == 'yes':
+        conditions.append('SSN_MATCH = 100')
+    elif ssn_filter == 'no':
+        conditions.append('SSN_MATCH = 0')
+    elif ssn_filter == 'partial':
+        conditions.append('SSN_MATCH > 0 AND SSN_MATCH < 100')
+
+    for col, op in [
+        ('min_name_score', 'NAME_SCORE >= %s'),
+        ('max_name_score', 'NAME_SCORE <= %s'),
+        ('min_addr_score', 'ADDRESS_SCORE >= %s'),
+        ('max_addr_score', 'ADDRESS_SCORE <= %s'),
+    ]:
+        val = filters.get(col)
+        if val is not None:
+            conditions.append(op)
+            params.append(float(val))
+
+    search = filters.get('search', '').strip()
+    if search:
+        text_cols = [
+            'SOURCE_NAME', 'SOURCE_ADDRESS', 'SOURCE_CITY', 'SOURCE_STATE',
+            'SOURCE_ZIP', 'DEC_NAME', 'DEC_ADDRESS', 'DEC_CITY',
+            'DEC_HDRCODE', 'RECOMMENDATION', 'HOW_TO_PROCESS', 'MEMO',
+        ]
+        like_clauses = ' OR '.join(f"{c} ILIKE %s" for c in text_cols)
+        conditions.append(f'({like_clauses})')
+        params.extend([f'%{search}%'] * len(text_cols))
+
+    where_sql = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+
+    # --- Total count (no filters) ---
+    cursor.execute(f'SELECT COUNT(*) FROM {table}')
+    total_count = int(cursor.fetchone()[0])
+
+    # --- Filtered count ---
+    cursor.execute(f'SELECT COUNT(*) FROM {table} {where_sql}', params)
+    filtered_count = int(cursor.fetchone()[0])
+
+    # --- Page data ---
+    col_list = ', '.join(_GRID_COLUMNS)
+    order_sql = ''
+    if sort_col and sort_col.lower() in _SORTABLE_COLS:
+        direction = 'DESC' if sort_dir.lower() == 'desc' else 'ASC'
+        order_sql = f'ORDER BY {sort_col.upper()} {direction}'
+
+    limit_sql = '' if length == -1 else f'LIMIT {int(length)} OFFSET {int(start)}'
+
+    cursor.execute(
+        f'SELECT {col_list} FROM {table} {where_sql} {order_sql} {limit_sql}',
+        params,
+    )
+    col_names = [desc[0].lower() for desc in cursor.description]
+    rows = [dict(zip(col_names, row)) for row in cursor.fetchall()]
+
+    return rows, total_count, filtered_count
+
+
 def merge_changes_to_snowflake(
     config: Dict[str, Any],
     pending_changes: Dict[int, Dict[str, Any]],
