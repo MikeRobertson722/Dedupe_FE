@@ -1071,13 +1071,20 @@ def cache_status():
 
 @app.route('/api/user-info')
 def user_info():
-    """Return the current user's identity from cookies."""
-    user_id, user_name = _get_user_identity()
-    return jsonify({
+    """Return the current user's identity from cookies, minting a new UUID if needed."""
+    user_id = request.cookies.get('user_id')
+    user_name = request.cookies.get('user_name')
+    is_new = user_id is None
+    if is_new:
+        user_id = str(_uuid_module.uuid4())
+    response = make_response(jsonify({
         'user_id': user_id,
         'user_name': user_name or '',
-        'is_new': user_id is None,
-    })
+        'is_new': is_new,
+    }))
+    if is_new:
+        response.set_cookie('user_id', user_id, max_age=365 * 24 * 3600, samesite='Lax')
+    return response
 
 
 @app.route('/api/set-username', methods=['POST'])
