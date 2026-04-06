@@ -4,6 +4,7 @@ Supports loading data from Snowflake
 """
 import os
 import time
+import threading
 import pandas as pd
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -13,6 +14,9 @@ _sf_conn = None
 _sf_config_hash = None
 _sf_conn_verified_at = 0  # timestamp of last successful health check
 _SF_CONN_TTL = 60         # seconds to trust a connection without re-checking
+
+# Thread safety for connection management
+_conn_lock = threading.Lock()
 
 
 def _build_conn_params(config: Dict[str, Any]) -> dict:
@@ -47,6 +51,7 @@ def get_snowflake_connection(config: Dict[str, Any]):
     Get a persistent Snowflake connection, creating one only if needed.
     Reuses the same connection across all operations to avoid repeated SSO prompts.
     Skips the SELECT 1 health check if the connection was verified within _SF_CONN_TTL seconds.
+    Thread-safe via _conn_lock.
     """
     global _sf_conn, _sf_config_hash, _sf_conn_verified_at
 
@@ -61,28 +66,25 @@ def get_snowflake_connection(config: Dict[str, Any]):
     conn_params = _build_conn_params(config)
     config_hash = str(sorted(conn_params.items()))
 
-    # Reuse existing connection if same config
-    if _sf_conn is not None and _sf_config_hash == config_hash:
-        # Skip health check if recently verified
-        if (time.time() - _sf_conn_verified_at) < _SF_CONN_TTL:
-            return _sf_conn
-        # Otherwise verify with SELECT 1
-        try:
-            _sf_conn.cursor().execute("SELECT 1")
-            _sf_conn_verified_at = time.time()
-            return _sf_conn
-        except Exception:
-            # Connection is dead — reconnect
+    with _conn_lock:
+        if _sf_conn is not None and _sf_config_hash == config_hash:
+            if (time.time() - _sf_conn_verified_at) < _SF_CONN_TTL:
+                return _sf_conn
             try:
-                _sf_conn.close()
+                _sf_conn.cursor().execute("SELECT 1")
+                _sf_conn_verified_at = time.time()
+                return _sf_conn
             except Exception:
-                pass
-            _sf_conn = None
+                try:
+                    _sf_conn.close()
+                except Exception:
+                    pass
+                _sf_conn = None
 
-    _sf_conn = connector.connect(**conn_params)
-    _sf_config_hash = config_hash
-    _sf_conn_verified_at = time.time()
-    return _sf_conn
+        _sf_conn = connector.connect(**conn_params)
+        _sf_config_hash = config_hash
+        _sf_conn_verified_at = time.time()
+        return _sf_conn
 
 
 class DataSource:
