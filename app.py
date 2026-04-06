@@ -311,6 +311,10 @@ def get_matches():
                 if max_addr_score is not None:
                     mask &= df['address_score'] <= max_addr_score
 
+                # Exclude STAGED by default unless explicitly requested
+                if not any(v.upper() == 'STAGED' for v in rec_values):
+                    mask &= df['recommendation'].str.upper() != 'STAGED'
+
                 df_filtered = df[mask]
 
                 if sort_col and sort_col in df_filtered.columns:
@@ -349,6 +353,7 @@ def get_matches():
                 'min_addr_score': min_addr_score,
                 'max_addr_score': max_addr_score,
                 'search': search_value,
+                'hide_staged': True,
             }
             rows, records_total, records_filtered = query_snowflake_page(
                 config=DATA_CONFIG,

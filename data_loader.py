@@ -462,6 +462,10 @@ def query_snowflake_page(
             conditions.append(f'({like_clauses})')
             params.extend([f'%{search}%'] * len(text_cols))
 
+        # Exclude STAGED records when no recommendation filter is set (default behavior)
+        if filters.get('hide_staged') and not rec:
+            conditions.append("UPPER(RECOMMENDATION) != 'STAGED'")
+
         where_sql = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
 
         # --- Total count (no filters) ---

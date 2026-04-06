@@ -2,9 +2,20 @@ let gridApi;
 let selectedRows = new Set();
 let editModal;
 let recommendationValues = [];
-let allRowData = [];
 let activeRecFilter = '';
 let recConfig = {};
+let selectedRowDataMap = new Map(); // rowId -> row data, for bulk operations
+let lastRecordsTotal = 0;
+let lastRecordsFiltered = 0;
+let currentFilters = {
+    recommendation: '',
+    ssn_match: '',
+    min_name_score: '',
+    max_name_score: '',
+    min_addr_score: '',
+    max_addr_score: '',
+    search: '',
+};
 
 // Undo/Redo stacks
 var undoStack = [];
@@ -83,7 +94,10 @@ function buildRecFilterDropdown(recs) {
     $c.html(html);
     $c.on('change', '.rec-check', function() {
         updateRecFilterLabel();
-        onExternalFilterChanged();
+        var checked = getSelectedRecs();
+        currentFilters.recommendation = checked.join(',');
+        activeRecFilter = checked.length === 1 ? checked[0] : '';
+        applyServerFilters();
     });
 }
 
@@ -105,7 +119,10 @@ function updateRecFilterLabel() {
 function toggleAllRecs(selectAll) {
     $('.rec-check').prop('checked', selectAll);
     updateRecFilterLabel();
-    onExternalFilterChanged();
+    var checked = getSelectedRecs();
+    currentFilters.recommendation = checked.join(',');
+    activeRecFilter = checked.length === 1 ? checked[0] : '';
+    applyServerFilters();
 }
 
 // ── Column visibility dropdown ──
@@ -189,56 +206,18 @@ function syncColVisDropdown() {
     });
 }
 
-// ── External filter state ──
-function isExternalFilterPresent() {
-    // Always present because STAGED records are hidden by default
-    return true;
-}
-
-function doesExternalFilterPass(node) {
-    var data = node.data;
-
-    // Hide STAGED records unless user explicitly filters to STAGED
-    if (activeRecFilter !== 'STAGED' && (data.recommendation || '').toUpperCase() === 'STAGED') return false;
-
-    // Recommendation filter
-    if (activeRecFilter && data.recommendation !== activeRecFilter) return false;
-
-    // SSN filter
-    var ssn = $('#ssnFilter').val();
-    if (ssn === 'yes' && data.ssn_match !== 100) return false;
-    if (ssn === 'no' && data.ssn_match !== 0) return false;
-    if (ssn === 'partial' && (data.ssn_match <= 0 || data.ssn_match >= 100)) return false;
-
-    // Score filters
-    var minName = $('#minNameScore').val();
-    if (minName && (data.name_score === '' || Number(data.name_score) < Number(minName))) return false;
-    var maxName = $('#maxNameScore').val();
-    if (maxName && (data.name_score === '' || Number(data.name_score) > Number(maxName))) return false;
-    var minAddr = $('#minAddrScore').val();
-    if (minAddr && (data.address_score === '' || Number(data.address_score) < Number(minAddr))) return false;
-    var maxAddr = $('#maxAddrScore').val();
-    if (maxAddr && (data.address_score === '' || Number(data.address_score) > Number(maxAddr))) return false;
-
-    return true;
-}
-
+// ── External filter state (legacy stub — now handled server-side) ──
 function onExternalFilterChanged() {
-    if (!gridApi) return;
-    gridApi.deselectAll();
-    selectedRows.clear();
-    updateSelectionInfo();
-    gridApi.onFilterChanged();
-    updateGridInfo();
+    // Kept as a stub so legacy callers don't crash.
+    // Actual filtering is now done server-side via applyServerFilters().
+    applyServerFilters();
     if (!_suppressFilterSave) saveFilterState();
 }
 
 function updateGridInfo() {
-    if (!gridApi) return;
-    var displayed = 0;
-    gridApi.forEachNodeAfterFilterAndSort(function() { displayed++; });
-    var total = allRowData.length;
-    $('#gridInfo').text('Showing ' + displayed.toLocaleString() + ' of ' + total.toLocaleString() + ' records');
+    var shown = lastRecordsFiltered || 0;
+    var total = lastRecordsTotal || 0;
+    $('#gridInfo').text('Showing ' + shown.toLocaleString() + ' of ' + total.toLocaleString() + ' records');
 }
 
 // ── Cell renderers ──
@@ -381,7 +360,14 @@ function applyFilterState(state) {
         $('#minAddrScore').val(state.minAddrScore || '');
         $('#maxAddrScore').val(state.maxAddrScore || '');
         activeRecFilter = state.activeRecFilter || '';
-        onExternalFilterChanged();
+        // Sync currentFilters with restored state
+        currentFilters.recommendation = activeRecFilter;
+        currentFilters.ssn_match = state.ssnFilter || '';
+        currentFilters.min_name_score = state.minNameScore || '';
+        currentFilters.max_name_score = state.maxNameScore || '';
+        currentFilters.min_addr_score = state.minAddrScore || '';
+        currentFilters.max_addr_score = state.maxAddrScore || '';
+        applyServerFilters();
     } catch (e) {
         console.warn('applyFilterState failed:', e);
     } finally {
@@ -532,7 +518,11 @@ function initGrid(savedColState, savedFilterState) {
 
     var gridOptions = {
         columnDefs: columnDefs,
-        rowData: [],
+        rowModelType: 'infinite',
+        // rowData removed — infinite row model uses datasource
+        cacheBlockSize: 100,
+        maxBlocksInCache: 10,
+        infiniteInitialRowCount: 100,
         getRowId: function(params) { return String(params.data._row_id); },
         stopEditingWhenCellsLoseFocus: true,
         defaultColDef: {
@@ -560,8 +550,6 @@ function initGrid(savedColState, savedFilterState) {
         pagination: false,
         suppressCellFocus: false,
         tooltipShowDelay: 300,
-        isExternalFilterPresent: isExternalFilterPresent,
-        doesExternalFilterPass: doesExternalFilterPass,
         rowClassRules: {
             'trust-highlight': function(params) {
                 var v = params.data.is_trust;
@@ -597,6 +585,7 @@ function initGrid(savedColState, savedFilterState) {
             applyColumnState(savedColState);
             syncColVisDropdown();
             loadGridData(savedFilterState);
+            gridApi.setGridOption('datasource', buildDatasource());
         },
         onColumnResized: function(params) {
             if (!params.finished) return;
@@ -622,8 +611,12 @@ function initGrid(savedColState, savedFilterState) {
         },
         onSelectionChanged: function() {
             selectedRows.clear();
+            selectedRowDataMap.clear();
             gridApi.getSelectedNodes().forEach(function(node) {
-                selectedRows.add(node.data._row_id);
+                if (node.data) {
+                    selectedRows.add(node.data._row_id);
+                    selectedRowDataMap.set(node.data._row_id, node.data);
+                }
             });
             updateSelectionInfo();
         },
@@ -635,57 +628,19 @@ function initGrid(savedColState, savedFilterState) {
 }
 
 function loadGridData(savedFilterState) {
-    fetch('/api/matches_all')
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            allRowData = prefillProcessField(data);
-            gridApi.setGridOption('rowData', allRowData);
-            applyFilterState(savedFilterState || null);
-            updateGridInfo();
-        })
-        .catch(function(err) {
-            console.error('Failed to load data:', err);
-            showToast('Failed to load data', 'error');
-        });
+    if (savedFilterState) {
+        applyFilterState(savedFilterState);
+    }
+    if (typeof gridApi !== 'undefined' && gridApi) {
+        gridApi.setGridOption('datasource', buildDatasource());
+    }
 }
 
 function refreshGridData(onDone) {
-    fetch('/api/matches_all')
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            var newRows = prefillProcessField(data);
-
-            // Build lookup of current rows for change detection
-            var oldById = {};
-            (allRowData || []).forEach(function(r) { oldById[r._row_id] = r; });
-
-            allRowData = newRows;
-
-            // For each changed row, call node.setData() directly — the most reliable
-            // AG Grid API for forcing a full cell repaint on a specific row node.
-            // applyTransaction/setGridOption can both fail to repaint custom cell
-            // renderers (memo, process) when getRowId is configured.
-            newRows.forEach(function(r) {
-                var old = oldById[r._row_id];
-                if (!old) return;
-                var hasChange = SR_TEXT_COLS.some(function(col) {
-                    return String(r[col] || '') !== String(old[col] || '');
-                });
-                if (hasChange) {
-                    var node = gridApi.getRowNode(String(r._row_id));
-                    if (node) node.setData(r);
-                }
-            });
-
-            updateGridInfo();
-            if (onDone) {
-                requestAnimationFrame(function() {
-                    requestAnimationFrame(function() {
-                        onDone();
-                    });
-                });
-            }
-        });
+    if (typeof gridApi !== 'undefined' && gridApi) {
+        gridApi.purgeInfiniteCache();
+    }
+    if (typeof onDone === 'function') setTimeout(onDone, 300);
 }
 
 // ── Bucket count / cache status helpers ──
@@ -712,6 +667,66 @@ function refreshCacheStatus() {
     }).fail(function() {
         $('#cacheModeBadge').text('Unknown').removeClass('bg-info text-dark bg-secondary').addClass('bg-danger').show();
     });
+}
+
+// ── Infinite Row Model datasource ──
+function buildDatasource() {
+    return {
+        getRows: function(params) {
+            var sortCol = null, sortDir = 'asc';
+            if (params.sortModel && params.sortModel.length > 0) {
+                sortCol = params.sortModel[0].colId;
+                sortDir = params.sortModel[0].sort || 'asc';
+            }
+
+            var qp = new URLSearchParams({
+                draw: 1,
+                start: params.startRow,
+                length: params.endRow - params.startRow,
+                recommendation: currentFilters.recommendation || '',
+                'ssn_match': currentFilters.ssn_match || '',
+            });
+            if (currentFilters.min_name_score !== '') qp.set('min_name_score', currentFilters.min_name_score);
+            if (currentFilters.max_name_score !== '') qp.set('max_name_score', currentFilters.max_name_score);
+            if (currentFilters.min_addr_score !== '') qp.set('min_addr_score', currentFilters.min_addr_score);
+            if (currentFilters.max_addr_score !== '') qp.set('max_addr_score', currentFilters.max_addr_score);
+            if (currentFilters.search) qp.set('search[value]', currentFilters.search);
+            if (sortCol) {
+                qp.set('order[0][column]', '0');
+                qp.set('order[0][dir]', sortDir);
+                qp.set('columns[0][data]', sortCol);
+            }
+
+            fetch('/api/matches?' + qp.toString())
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var rows = prefillProcessField(data.data || []);
+                    lastRecordsTotal = data.recordsTotal || 0;
+                    lastRecordsFiltered = data.recordsFiltered || 0;
+                    var rowCount = lastRecordsFiltered <= params.endRow ? lastRecordsFiltered : -1;
+                    params.successCallback(rows, rowCount);
+                    updateGridInfo();
+                    // Update cache mode badge from response
+                    if (data.cache_mode) {
+                        var badge = $('#cacheModeBadge');
+                        if (data.cache_mode === 'cached') {
+                            badge.text('Cached').removeClass('bg-secondary').addClass('bg-info text-dark').show();
+                        } else {
+                            badge.text('Live query').removeClass('bg-info text-dark').addClass('bg-secondary').show();
+                        }
+                    }
+                })
+                .catch(function() {
+                    params.failCallback();
+                });
+        }
+    };
+}
+
+function applyServerFilters() {
+    if (typeof gridApi !== 'undefined' && gridApi) {
+        gridApi.setGridOption('datasource', buildDatasource());
+    }
 }
 
 // ── Document ready ──
@@ -821,20 +836,36 @@ $(document).ready(function() {
         loadStagingCount();
     });
 
-    // Filter dropdowns trigger external filter
-    $('#ssnFilter, #minNameScore, #maxNameScore, #minAddrScore, #maxAddrScore').on('change', function() {
-        onExternalFilterChanged();
+    // Filter dropdowns trigger server-side filter refresh
+    $('#ssnFilter').on('change', function() {
+        currentFilters.ssn_match = $(this).val();
+        applyServerFilters();
+    });
+    $('#minNameScore').on('change', function() {
+        currentFilters.min_name_score = $(this).val();
+        applyServerFilters();
+    });
+    $('#maxNameScore').on('change', function() {
+        currentFilters.max_name_score = $(this).val();
+        applyServerFilters();
+    });
+    $('#minAddrScore').on('change', function() {
+        currentFilters.min_addr_score = $(this).val();
+        applyServerFilters();
+    });
+    $('#maxAddrScore').on('change', function() {
+        currentFilters.max_addr_score = $(this).val();
+        applyServerFilters();
     });
 
-
-    // Quick filter (search)
+    // Quick filter (search) — server-side
     var quickFilterTimer;
     $('#quickFilterInput').on('input', function() {
         var val = $(this).val();
         clearTimeout(quickFilterTimer);
         quickFilterTimer = setTimeout(function() {
-            gridApi.setGridOption('quickFilterText', val);
-            updateGridInfo();
+            currentFilters.search = val;
+            applyServerFilters();
         }, 300);
     });
 
@@ -1043,8 +1074,8 @@ $(document).ready(function() {
         $.ajax({
             url: '/api/bulk_field_update', method: 'POST', contentType: 'application/json',
             data: JSON.stringify({ row_ids: rowIds, field: 'how_to_process', value: value }),
-            success: function(data) { /* immediate save — no pending state */ },
-            error: function() { showToast('Bulk update failed', 'error'); }
+            success: function(data) { showToast('Saved', 'success'); },
+            error: function(xhr) { showToast('Save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
         });
     }
 
@@ -1056,12 +1087,8 @@ $(document).ready(function() {
         var $sel = $(this);
         var rowId = parseInt($sel.data('row-id'));
         var newValue = $sel.val();
-        var rowNode = null;
-
-        // Find the row node to get the old value
-        gridApi.forEachNode(function(node) {
-            if (node.data._row_id === rowId) rowNode = node;
-        });
+        // Find the row node to get the old value (getRowNode works for loaded blocks)
+        var rowNode = gridApi.getRowNode(String(rowId));
 
         var oldValue = rowNode ? (rowNode.data.how_to_process || '') : '';
         if (oldValue === newValue) return;
@@ -1260,33 +1287,46 @@ function loadStats() {
 
 function filterByRec(rec) {
     activeRecFilter = rec;
+    currentFilters.recommendation = rec;
     $('#ssnFilter').val('');
+    currentFilters.ssn_match = '';
     var cfg = recConfig[rec];
     if (cfg) {
         $('#minNameScore').val(cfg.min_name || '');
         $('#maxNameScore').val(cfg.max_name || '');
         $('#minAddrScore').val(cfg.min_addr || '');
         $('#maxAddrScore').val(cfg.max_addr || '');
+        currentFilters.min_name_score = cfg.min_name || '';
+        currentFilters.max_name_score = cfg.max_name || '';
+        currentFilters.min_addr_score = cfg.min_addr || '';
+        currentFilters.max_addr_score = cfg.max_addr || '';
     } else {
         $('#minNameScore').val('');
         $('#maxNameScore').val('');
         $('#minAddrScore').val('');
         $('#maxAddrScore').val('');
+        currentFilters.min_name_score = '';
+        currentFilters.max_name_score = '';
+        currentFilters.min_addr_score = '';
+        currentFilters.max_addr_score = '';
     }
-    onExternalFilterChanged();
+    gridApi && gridApi.deselectAll();
+    selectedRows.clear();
+    selectedRowDataMap.clear();
+    applyServerFilters();
     updateSelectionInfo();
-    refreshCacheStatus();
+    try { localStorage.setItem('agGridFilterState', JSON.stringify({ recommendation: rec })); } catch(e) {}
 }
 
 function filterByStat(type) {
     if (type === 'all') { clearFilters(); }
-    else if (type === 'ssn_yes') { $('#ssnFilter').val('yes'); onExternalFilterChanged(); }
-    else if (type === 'ssn_partial') { $('#ssnFilter').val('partial'); onExternalFilterChanged(); }
-    else if (type === 'ssn_no') { $('#ssnFilter').val('no'); onExternalFilterChanged(); }
+    else if (type === 'ssn_yes') { $('#ssnFilter').val('yes'); currentFilters.ssn_match = 'yes'; applyServerFilters(); }
+    else if (type === 'ssn_partial') { $('#ssnFilter').val('partial'); currentFilters.ssn_match = 'partial'; applyServerFilters(); }
+    else if (type === 'ssn_no') { $('#ssnFilter').val('no'); currentFilters.ssn_match = 'no'; applyServerFilters(); }
 }
 
 function applyFilters() {
-    onExternalFilterChanged();
+    applyServerFilters();
 }
 
 function openDevNotes() {
@@ -1297,14 +1337,20 @@ function openDevNotes() {
 
 function clearFilters() {
     activeRecFilter = '';
+    currentFilters.recommendation = '';
+    currentFilters.ssn_match = '';
+    currentFilters.min_name_score = '';
+    currentFilters.max_name_score = '';
+    currentFilters.min_addr_score = '';
+    currentFilters.max_addr_score = '';
+    currentFilters.search = '';
     $('#ssnFilter').val('');
     $('#minNameScore').val('');
     $('#maxNameScore').val('');
     $('#minAddrScore').val('');
     $('#maxAddrScore').val('');
     $('#quickFilterInput').val('');
-    if (gridApi) gridApi.setGridOption('quickFilterText', '');
-    onExternalFilterChanged();
+    applyServerFilters();
     updateSelectionInfo();
 }
 
@@ -1492,23 +1538,24 @@ function bulkApprove() {
         var processValues = {};
         selectedRows.forEach(function(rid) {
             var node = gridApi.getRowNode(String(rid));
-            var oldVal = node ? (node.data.recommendation || '') : '';
+            var rowData = (node && node.data) ? node.data : (selectedRowDataMap.get(rid) || {});
+            var oldVal = rowData.recommendation || '';
             undoChanges.push({ rowId: rid, field: 'recommendation', oldValue: oldVal, newValue: 'APPROVED' });
             // Capture the current process value (may be pre-filled client-side) so it
             // gets persisted alongside the recommendation change.
-            if (node && node.data && node.data.how_to_process) {
-                processValues[rid] = node.data.how_to_process;
+            if (rowData.how_to_process) {
+                processValues[rid] = rowData.how_to_process;
             }
         });
         if (undoChanges.length > 0) pushUndo({ type: 'bulk', changes: undoChanges });
         var bulkRecords = [];
-        gridApi.forEachNode(function(node) {
-            if (node.data && selectedRows.has(node.data._row_id)) {
+        selectedRowDataMap.forEach(function(data, id) {
+            if (selectedRows.has(id)) {
                 bulkRecords.push({
-                    id: node.data.id,
-                    source_id: node.data.source_id,
-                    source_ssn: node.data.source_ssn,
-                    old_recommendation: node.data.recommendation || '',
+                    id: data.id,
+                    source_id: data.source_id || '',
+                    source_ssn: data.source_ssn || '',
+                    old_recommendation: data.recommendation || '',
                 });
             }
         });
@@ -1520,6 +1567,7 @@ function bulkApprove() {
                 // immediate save — no pending state
                 gridApi.deselectAll();
                 selectedRows.clear();
+                selectedRowDataMap.clear();
                 updateSelectionInfo();
                 refreshGridData();
                 loadStats();
@@ -1742,9 +1790,12 @@ function openSearchReplace() {
 function getVisibleRowIds() {
     var ids = [];
     if (gridApi) {
-        gridApi.forEachNodeAfterFilterAndSort(function(node) {
-            if (node.data && node.data._row_id !== undefined) ids.push(node.data._row_id);
-        });
+        // In infinite row model, iterate loaded rows via displayed row count
+        var rowCount = gridApi.getDisplayedRowCount();
+        for (var i = 0; i < rowCount; i++) {
+            var node = gridApi.getDisplayedRowAtIndex(i);
+            if (node && node.data && node.data._row_id !== undefined) ids.push(node.data._row_id);
+        }
     }
     return ids;
 }
@@ -1759,8 +1810,11 @@ function srBuildMatches() {
     var cols = (col === 'all') ? SR_TEXT_COLS : [col];
     var searchVal = caseSensitive ? search : search.toLowerCase();
 
-    gridApi.forEachNodeAfterFilterAndSort(function(node) {
-        if (!node.data) return;
+    // In infinite row model, search only loaded (currently visible) rows
+    var rowCount = gridApi.getDisplayedRowCount();
+    for (var idx = 0; idx < rowCount; idx++) {
+        var node = gridApi.getDisplayedRowAtIndex(idx);
+        if (!node || !node.data) continue;
         cols.forEach(function(c) {
             var val = String(node.data[c] || '');
             var cmp = caseSensitive ? val : val.toLowerCase();
@@ -1768,7 +1822,7 @@ function srBuildMatches() {
                 srMatches.push({ rowId: node.data._row_id, nodeId: node.id, col: c });
             }
         });
-    });
+    }
 }
 
 function srHighlightMatch() {
