@@ -696,6 +696,8 @@ function refreshBucketCounts() {
             var count = counts[bucket];
             $(this).text(count !== undefined ? count.toLocaleString() : '');
         });
+    }).fail(function() {
+        $('.bucket-count').text('?');
     });
 }
 
@@ -707,6 +709,8 @@ function refreshCacheStatus() {
         } else {
             badge.text('Live query').removeClass('bg-info text-dark').addClass('bg-secondary').show();
         }
+    }).fail(function() {
+        $('#cacheModeBadge').text('Unknown').removeClass('bg-info text-dark bg-secondary').addClass('bg-danger').show();
     });
 }
 
@@ -1256,7 +1260,6 @@ function loadStats() {
 
 function filterByRec(rec) {
     activeRecFilter = rec;
-    $('#cacheLoadingBadge').show();
     $('#ssnFilter').val('');
     var cfg = recConfig[rec];
     if (cfg) {
@@ -1272,7 +1275,6 @@ function filterByRec(rec) {
     }
     onExternalFilterChanged();
     updateSelectionInfo();
-    $('#cacheLoadingBadge').hide();
     refreshCacheStatus();
 }
 
