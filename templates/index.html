@@ -11,6 +11,12 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body class="d-flex flex-column vh-100 overflow-hidden">
+    <!-- User identity banner — hidden after name is set -->
+    <div id="identityBanner" class="alert alert-info alert-dismissible mb-0 py-2 px-3 rounded-0 d-none" role="alert">
+      You're reviewing as <strong id="identityDisplayName">Guest</strong>.
+      <a href="#" id="setNameLink" class="alert-link ms-2">Set your name</a>
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
     <nav class="navbar navbar-dark bg-dark flex-shrink-0">
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1">
@@ -32,6 +38,7 @@
                 <button class="btn btn-outline-warning btn-sm" data-bs-toggle="modal" data-bs-target="#helpModal" title="Help">
                     <i class="fas fa-question-circle"></i>
                 </button>
+                <span class="navbar-text ms-3 text-muted small" id="navUserName"></span>
             </div>
         </div>
     </nav>
@@ -527,6 +534,24 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Username Modal -->
+    <div class="modal fade" id="usernameModal" tabindex="-1" aria-labelledby="usernameModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="usernameModalLabel">Set your display name</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <input type="text" id="usernameInput" class="form-control" placeholder="Your name" maxlength="50">
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-primary" id="saveUsernameBtn">Save</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>

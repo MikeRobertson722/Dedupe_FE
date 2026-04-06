@@ -690,6 +690,58 @@ function refreshGridData(onDone) {
 
 // ── Document ready ──
 $(document).ready(function() {
+    // --- User identity ---
+    function getCookie(name) {
+        var match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+        return match ? decodeURIComponent(match[1]) : null;
+    }
+    function setCookie(name, value, days) {
+        var expires = new Date(Date.now() + days * 864e5).toUTCString();
+        document.cookie = name + '=' + encodeURIComponent(value) + '; expires=' + expires + '; path=/; SameSite=Lax';
+    }
+
+    function initUserIdentity() {
+        var userId = getCookie('user_id');
+        var userName = getCookie('user_name');
+
+        if (!userId) {
+            // Generate a UUID and set it (server also sets it on page load,
+            // but set client-side as a fallback)
+            userId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+            setCookie('user_id', userId, 365);
+        }
+
+        if (!userName) {
+            $('#identityBanner').removeClass('d-none');
+            $('#identityDisplayName').text('Guest');
+        } else {
+            $('#navUserName').text(userName);
+            $('#identityDisplayName').text(userName);
+        }
+    }
+
+    $('#setNameLink').on('click', function(e) {
+        e.preventDefault();
+        $('#usernameInput').val(getCookie('user_name') || '');
+        new bootstrap.Modal(document.getElementById('usernameModal')).show();
+    });
+
+    $('#saveUsernameBtn').on('click', function() {
+        var name = $('#usernameInput').val().trim().slice(0, 50);
+        if (!name) return;
+        setCookie('user_name', name, 365);
+        $('#navUserName').text(name);
+        $('#identityDisplayName').text(name);
+        $('#identityBanner').addClass('d-none');
+        bootstrap.Modal.getInstance(document.getElementById('usernameModal')).hide();
+        showToast('Name saved: ' + name, 'success');
+    });
+
+    initUserIdentity();
+
     editModal = new bootstrap.Modal(document.getElementById('editModal'));
     var recsReq     = $.get('/api/recommendations');
     var settingsReq = $.get('/api/grid_settings').then(null, function() {
