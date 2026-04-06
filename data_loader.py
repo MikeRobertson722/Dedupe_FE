@@ -820,7 +820,7 @@ def count_staging_eligible(df: pd.DataFrame) -> int:
     return int(mask.sum())
 
 
-def stage_approved_records(config: Dict[str, Any], df: pd.DataFrame) -> int:
+def stage_approved_records(config: Dict[str, Any], df=None) -> int:
     """
     Copy eligible records to DGO_MA.MA_STAGING.STG_BA_MASTER and flag them
     as STAGED in the source table, all within a single transaction.
@@ -829,14 +829,30 @@ def stage_approved_records(config: Dict[str, Any], df: pd.DataFrame) -> int:
     """
     table = config.get('table', 'import_merge_matches').upper()
 
-    # Identify eligible rows from the DataFrame
-    mask = (
-        (df['recommendation'].str.upper() == 'APPROVED') &
-        (df['how_to_process'].fillna('').str.strip() != '')
-    )
-    eligible = df[mask]
-    if eligible.empty:
-        return 0
+    if df is None:
+        # Load eligible records from Snowflake directly
+        conn = get_snowflake_connection(config)
+        cursor_check = conn.cursor()
+        cursor_check.execute(
+            f"SELECT SOURCE_ID, SOURCE_SSN FROM {table} "
+            f"WHERE UPPER(RECOMMENDATION) = 'APPROVED' "
+            f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != ''"
+        )
+        rows = cursor_check.fetchall()
+        cursor_check.close()
+        if not rows:
+            return 0
+        import pandas as _pd
+        eligible = _pd.DataFrame(rows, columns=['source_id', 'source_ssn'])
+    else:
+        # Identify eligible rows from the DataFrame
+        mask = (
+            (df['recommendation'].str.upper() == 'APPROVED') &
+            (df['how_to_process'].fillna('').str.strip() != '')
+        )
+        eligible = df[mask]
+        if eligible.empty:
+            return 0
 
     # Build WHERE clause using source_id + source_ssn pairs
     pairs = list(zip(

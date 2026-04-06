@@ -23,7 +23,7 @@ from data_loader import (
     get_bucket_counts, query_snowflake_page,
     save_record_immediately, save_records_batch,
     DataSource, BucketCache, BUCKET_CACHE_MAX_ROWS,
-    _FIELD_TO_DB_COL,  # noqa: F401 — used in Task 8 search_replace endpoint
+    _FIELD_TO_DB_COL,
 )
 
 app = Flask(__name__)
@@ -411,6 +411,7 @@ def get_stats():
             'ssn_no_match': int(ssn_none or 0),
             'rec_config': _load_ba_config(),
         }
+        cursor.close()
         return jsonify(stats)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -419,13 +420,19 @@ def get_stats():
 @app.route('/api/record/<int:row_id>')
 def get_record(row_id):
     try:
-        df = load_cached_data()
-        if row_id >= len(df):
+        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute(f'SELECT * FROM {table} WHERE ID = %s', (row_id,))
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
             return jsonify({'error': 'Invalid row_id'}), 404
-
-        record = df.iloc[row_id].to_dict()
-        record = {k: (None if pd.isna(v) else v) for k, v in record.items()}
+        cols = [desc[0].lower() for desc in cursor.description]
+        record = dict(zip(cols, row))
+        record = {k: (None if v is None else v) for k, v in record.items()}
         record['_row_id'] = row_id
+        cursor.close()
         return jsonify(record)
 
     except Exception as e:
@@ -453,15 +460,18 @@ def get_db_record(uid):
 
 @app.route('/api/update', methods=['POST'])
 def update_record():
-    """Update a single field on a record. All changes are deferred until Save."""
-    global _pending_changes
+    """Update a single field on a record — writes immediately to Snowflake."""
     try:
         data = request.json
-        row_id = data.get('row_id')
+        row_id = data.get('row_id')        # Snowflake id column value
+        record_id = data.get('id', row_id) # prefer explicit 'id' if sent
+        source_id = data.get('source_id', '')
+        source_ssn = data.get('source_ssn', '')
         field = data.get('field')
         value = data.get('value')
+        old_value = data.get('old_value', '')
 
-        if row_id is None or not field:
+        if record_id is None or not field:
             return jsonify({'error': 'Missing required fields'}), 400
 
         allowed_fields = {
@@ -472,45 +482,32 @@ def update_record():
         if field not in allowed_fields:
             return jsonify({'error': f'Field "{field}" cannot be updated'}), 400
 
-        df = load_cached_data()
-        if row_id >= len(df):
-            return jsonify({'error': 'Invalid row_id'}), 400
-
-        # Block edits on STAGED records
-        if str(df.at[row_id, 'recommendation'] or '').upper() == 'STAGED':
-            return jsonify({'error': 'Cannot modify a STAGED record'}), 403
-
-        # Coerce value types
         if field in ('jib', 'rev', 'vendor'):
             value = int(value)
 
-        # Capture old value before updating
-        old_value = df.at[row_id, field]
+        # Block edits on STAGED records — check via quick SQL lookup
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
+        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        cursor.execute(f'SELECT RECOMMENDATION FROM {table} WHERE ID = %s', (record_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        if row and str(row[0] or '').upper() == 'STAGED':
+            return jsonify({'error': 'Cannot modify a STAGED record'}), 403
 
-        # Update in-memory DataFrame
-        df.at[row_id, field] = value
+        user_id, user_name = _get_user_identity()
+        save_record_immediately(
+            DATA_CONFIG, record_id, source_id, source_ssn,
+            {field: (old_value, value)},
+            user_id=user_id, user_name=user_name,
+        )
 
-        # Track as pending with (old_value, new_value)
-        if row_id not in _pending_changes:
-            _pending_changes[row_id] = {}
-        # Only store the first old_value (the original before any edits this session)
-        if field not in _pending_changes[row_id]:
-            _pending_changes[row_id][field] = (str(old_value), value)
-        else:
-            orig_old = _pending_changes[row_id][field][0]
-            if str(value) == str(orig_old):
-                # Value reverted to original — no longer pending
-                del _pending_changes[row_id][field]
-                if not _pending_changes[row_id]:
-                    del _pending_changes[row_id]
-            else:
-                _pending_changes[row_id][field] = (orig_old, value)
+        # Update hot cache row in-place
+        with _bucket_cache_lock:
+            if _bucket_cache is not None:
+                _bucket_cache.update_row(row_id=record_id, field=field, value=value)
 
-        return jsonify({
-            'success': True,
-            'pending_count': len(_pending_changes),
-            'message': 'Updated (unsaved)'
-        })
+        return jsonify({'success': True, 'message': 'Saved'})
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -518,66 +515,76 @@ def update_record():
 
 @app.route('/api/bulk_update', methods=['POST'])
 def bulk_update():
-    """Bulk update recommendation for multiple records (deferred until Save)."""
-    global _pending_changes
+    """Bulk update recommendation for multiple records — writes immediately."""
     try:
         data = request.json
+        records_in = data.get('records', [])  # new: list of {id, source_id, source_ssn, old_recommendation}
+        # Legacy shape: row_ids list (for backward compat with frontend during transition)
         row_ids = data.get('row_ids', [])
         new_recommendation = data.get('recommendation', 'APPROVED')
-        # Optional map of {row_id: how_to_process} to persist alongside the rec change.
-        # Keys may be strings (JSON object keys are always strings).
-        process_values = {int(k): v for k, v in data.get('process_values', {}).items() if v}
+        process_values = data.get('process_values', {})
 
-        if not row_ids:
-            return jsonify({'error': 'No row IDs provided'}), 400
+        if not records_in and not row_ids:
+            return jsonify({'error': 'No records provided'}), 400
 
-        df = load_cached_data()
-        success_count = 0
-        errors = []
+        # Normalise to records_in shape
+        if not records_in and row_ids:
+            # Legacy: look up source_id/source_ssn from cache or DB
+            records_in = []
+            for rid in row_ids:
+                rec = {'id': rid, 'source_id': '', 'source_ssn': '', 'old_recommendation': ''}
+                if _bucket_cache is not None:
+                    mask = _bucket_cache.df['id'] == rid
+                    if mask.any():
+                        rec['source_id'] = str(_bucket_cache.df.loc[mask, 'source_id'].values[0])
+                        rec['source_ssn'] = str(_bucket_cache.df.loc[mask, 'source_ssn'].values[0])
+                        rec['old_recommendation'] = str(_bucket_cache.df.loc[mask, 'recommendation'].values[0])
+                records_in.append(rec)
 
-        for row_id in row_ids:
-            try:
-                if row_id >= len(df):
-                    errors.append(f"Invalid row_id: {row_id}")
-                    continue
+        # Build batch records
+        batch = []
+        for rec in records_in:
+            rid = rec.get('id')
+            fields = {'recommendation': (rec.get('old_recommendation', ''), new_recommendation)}
+            pv = process_values.get(str(rid)) or process_values.get(rid)
+            if pv:
+                fields['how_to_process'] = ('', pv)
+            batch.append({
+                'record_id': rid,
+                'source_id': rec.get('source_id', ''),
+                'source_ssn': rec.get('source_ssn', ''),
+                'fields': fields,
+            })
 
-                # Skip STAGED records — they cannot be modified
-                if str(df.at[row_id, 'recommendation'] or '').upper() == 'STAGED':
-                    continue
+        # Filter out STAGED records
+        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        ids_to_check = [b['record_id'] for b in batch]
+        if ids_to_check:
+            conn = get_snowflake_connection(DATA_CONFIG)
+            cursor = conn.cursor()
+            placeholders = ', '.join(['%s'] * len(ids_to_check))
+            cursor.execute(
+                f"SELECT ID FROM {table} WHERE ID IN ({placeholders}) "
+                f"AND UPPER(RECOMMENDATION) = 'STAGED'",
+                ids_to_check,
+            )
+            staged_ids = {row[0] for row in cursor.fetchall()}
+            cursor.close()
+            batch = [b for b in batch if b['record_id'] not in staged_ids]
 
-                if row_id not in _pending_changes:
-                    _pending_changes[row_id] = {}
+        if not batch:
+            return jsonify({'success': True, 'updated': 0})
 
-                old_rec = str(df.at[row_id, 'recommendation'] or '')
-                df.at[row_id, 'recommendation'] = new_recommendation
-                if 'recommendation' not in _pending_changes[row_id]:
-                    _pending_changes[row_id]['recommendation'] = (old_rec, new_recommendation)
-                else:
-                    orig_old = _pending_changes[row_id]['recommendation'][0]
-                    _pending_changes[row_id]['recommendation'] = (orig_old, new_recommendation)
+        user_id, user_name = _get_user_identity()
+        affected = save_records_batch(DATA_CONFIG, batch, user_id=user_id, user_name=user_name)
 
-                # Persist process value if provided (captures client-side pre-fills)
-                if row_id in process_values:
-                    new_process = process_values[row_id]
-                    old_process = str(df.at[row_id, 'how_to_process'] or '')
-                    df.at[row_id, 'how_to_process'] = new_process
-                    if 'how_to_process' not in _pending_changes[row_id]:
-                        _pending_changes[row_id]['how_to_process'] = (old_process, new_process)
-                    else:
-                        orig_old_p = _pending_changes[row_id]['how_to_process'][0]
-                        _pending_changes[row_id]['how_to_process'] = (orig_old_p, new_process)
+        # Update hot cache
+        with _bucket_cache_lock:
+            if _bucket_cache is not None:
+                for b in batch:
+                    _bucket_cache.update_row(b['record_id'], 'recommendation', new_recommendation)
 
-                success_count += 1
-
-            except Exception as e:
-                errors.append(f"Row {row_id}: {str(e)}")
-
-        return jsonify({
-            'success': True,
-            'updated': success_count,
-            'errors': errors,
-            'pending_count': len(_pending_changes)
-        })
+        return jsonify({'success': True, 'updated': len(batch)})
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -585,16 +592,16 @@ def bulk_update():
 
 @app.route('/api/bulk_field_update', methods=['POST'])
 def bulk_field_update():
-    """Bulk update a single field for multiple records (deferred until Save)."""
-    global _pending_changes
+    """Bulk update a single field for multiple records — writes immediately."""
     try:
         data = request.json
-        row_ids = data.get('row_ids', [])
+        records_in = data.get('records', [])
+        row_ids = data.get('row_ids', [])  # legacy
         field = data.get('field')
         value = data.get('value')
 
-        if not row_ids or not field:
-            return jsonify({'error': 'Missing required fields'}), 400
+        if not field:
+            return jsonify({'error': 'Missing field'}), 400
 
         allowed_fields = {
             'recommendation', 'source_name', 'source_address_recomend',
@@ -607,28 +614,29 @@ def bulk_field_update():
         if field in ('jib', 'rev', 'vendor'):
             value = int(value)
 
-        df = load_cached_data()
-        success_count = 0
+        # Normalise legacy shape
+        if not records_in and row_ids:
+            records_in = [{'id': rid, 'source_id': '', 'source_ssn': '', 'old_value': ''} for rid in row_ids]
 
-        for row_id in row_ids:
-            if row_id >= len(df):
-                continue
-            old_value = df.at[row_id, field]
-            df.at[row_id, field] = value
-            if row_id not in _pending_changes:
-                _pending_changes[row_id] = {}
-            if field not in _pending_changes[row_id]:
-                _pending_changes[row_id][field] = (str(old_value), value)
-            else:
-                orig_old = _pending_changes[row_id][field][0]
-                _pending_changes[row_id][field] = (orig_old, value)
-            success_count += 1
+        batch = [
+            {
+                'record_id': rec.get('id'),
+                'source_id': rec.get('source_id', ''),
+                'source_ssn': rec.get('source_ssn', ''),
+                'fields': {field: (rec.get('old_value', ''), value)},
+            }
+            for rec in records_in
+        ]
 
-        return jsonify({
-            'success': True,
-            'updated': success_count,
-            'pending_count': len(_pending_changes)
-        })
+        user_id, user_name = _get_user_identity()
+        affected = save_records_batch(DATA_CONFIG, batch, user_id=user_id, user_name=user_name)
+
+        with _bucket_cache_lock:
+            if _bucket_cache is not None:
+                for b in batch:
+                    _bucket_cache.update_row(b['record_id'], field, value)
+
+        return jsonify({'success': True, 'updated': affected})
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -638,24 +646,20 @@ def bulk_field_update():
 def get_matches_all():
     """Return full dataset as JSON for AG Grid client-side processing"""
     try:
-        df = load_cached_data()
-        if df.empty:
+        # Use SQL pagination to fetch all records (legacy endpoint — prefer /api/matches)
+        rows, total_count, filtered_count = query_snowflake_page(
+            config=DATA_CONFIG,
+            filters={},
+            sort_col=None,
+            sort_dir='asc',
+            start=0,
+            length=-1,
+        )
+        if not rows:
             return Response('[]', mimetype='application/json')
-
-        needed_cols = [
-            'id', 'ssn_match', 'name_score', 'address_score', 'nameaddrscore', 'recommendation',
-            'how_to_process', 'source_id', 'source_addrseq', 'source_name',
-            'source_address', 'source_city', 'source_state', 'source_zip', 'source_ssn',
-            'source_address_recomend',
-            'dec_ssn', 'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
-            'dec_hdrcode', 'dec_addrsubcode', 'dec_contact', 'dec_address_looked_up',
-            'address_reason', 'jib', 'rev', 'vendor', 'memo', 'is_trust', 'run_id',
-            'name_normal_detail', 'address_normal_detail', 'name_match_detail', 'addr_match_detail'
-        ]
-        available = [c for c in needed_cols if c in df.columns]
-        df_out = df[available].fillna('').copy()
-        df_out['_row_id'] = df.index.tolist()
-        result = df_out.to_json(orient='records', default_handler=str)
+        for row in rows:
+            row['_row_id'] = row.get('id')
+        result = json.dumps(rows, ensure_ascii=False, default=str)
         return Response(result, mimetype='application/json')
 
     except Exception as e:
@@ -770,24 +774,23 @@ def post_grid_settings():
 
 @app.route('/api/search_replace', methods=['POST'])
 def search_replace():
-    """Search and replace text in one or all text columns (deferred until Save)."""
-    global _pending_changes
+    """Search and replace text in one or all text columns — writes immediately."""
     try:
         data = request.json
         search = data.get('search', '')
         replace = data.get('replace', '')
         column = data.get('column', 'all')
         case_sensitive = data.get('case_sensitive', False)
-        mode = data.get('mode', 'find')  # 'find' or 'replace'
+        mode = data.get('mode', 'find')
 
         if not search:
             return jsonify({'error': 'Search text is required'}), 400
 
         text_fields = {
-            'source_name', 'source_address_recomend', 'source_city', 'source_state', 'source_zip',
-            'recommendation', 'how_to_process', 'memo', 'address_reason'
+            'source_name', 'source_address_recomend', 'source_city',
+            'source_state', 'source_zip', 'recommendation',
+            'how_to_process', 'memo', 'address_reason',
         }
-
         if column == 'all':
             cols_to_search = list(text_fields)
         elif column in text_fields:
@@ -795,81 +798,75 @@ def search_replace():
         else:
             return jsonify({'error': f'Column "{column}" is not searchable'}), 400
 
-        df_full = load_cached_data()
-        if df_full.empty:
-            return jsonify({'matches': 0, 'rows': 0})
+        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
 
-        # Restrict to visible/filtered rows if provided
+        # Build ILIKE conditions
+        ilike_op = 'LIKE' if case_sensitive else 'ILIKE'
+        col_map = {f: _FIELD_TO_DB_COL.get(f, f.upper()) for f in cols_to_search}
+        like_clauses = ' OR '.join(f'{v} {ilike_op} %s' for v in col_map.values())
+
         row_ids = data.get('row_ids')
-        if row_ids is not None:
-            df = df_full.loc[df_full.index.isin(row_ids)]
-        else:
-            df = df_full
+        id_where = ''
+        id_params: list = []
+        if row_ids:
+            placeholders = ', '.join(['%s'] * len(row_ids))
+            id_where = f' AND ID IN ({placeholders})'
+            id_params = list(row_ids)
 
-        # Count matches
-        match_count = 0
-        match_rows = set()
-        for col in cols_to_search:
-            if col not in df.columns:
-                continue
-            series = df[col].astype(str).fillna('')
-            if case_sensitive:
-                mask = series.str.contains(search, case=True, na=False, regex=False)
-            else:
-                mask = series.str.contains(search, case=False, na=False, regex=False)
-            hits = mask.sum()
-            match_count += hits
-            match_rows.update(df.index[mask].tolist())
+        like_params = [f'%{search}%'] * len(cols_to_search)
 
         if mode == 'find':
-            return jsonify({'matches': int(match_count), 'rows': len(match_rows)})
+            cursor.execute(
+                f'SELECT COUNT(*) FROM {table} WHERE ({like_clauses}){id_where}',
+                like_params + id_params,
+            )
+            count = int(cursor.fetchone()[0])
+            cursor.close()
+            return jsonify({'matches': count, 'rows': count})
 
-        # Replace mode
-        if not match_rows:
-            return jsonify({'replaced': 0, 'rows': 0, 'pending_count': len(_pending_changes)})
+        # Replace mode — use Snowflake REGEXP_REPLACE or REPLACE
+        import re as _re
+        user_id, user_name = _get_user_identity()
 
-        # Exclude STAGED rows from replacements
-        match_rows = {
-            idx for idx in match_rows
-            if str(df_full.at[idx, 'recommendation'] or '').upper() != 'STAGED'
-        }
+        total_replaced = 0
+        for field, db_col in col_map.items():
+            if case_sensitive:
+                replace_sql = f"REPLACE({db_col}, %s, %s)"
+                col_params = [search, replace]
+            else:
+                replace_sql = f"REGEXP_REPLACE({db_col}, %s, %s, 1, 0, 'i')"
+                col_params = [_re.escape(search), replace]
 
-        replaced_count = 0
-        replaced_rows = set()
-        for col in cols_to_search:
-            if col not in df.columns:
-                continue
-            for idx in list(match_rows):
-                old_val = str(df_full.at[idx, col]) if pd.notna(df_full.at[idx, col]) else ''
-                if case_sensitive:
-                    if search not in old_val:
-                        continue
-                    new_val = old_val.replace(search, replace)
-                else:
-                    # Case-insensitive replace
-                    import re
-                    new_val = re.sub(re.escape(search), replace, old_val, flags=re.IGNORECASE)
-                    if new_val == old_val:
-                        continue
+            cursor.execute(
+                f"UPDATE {table} SET {db_col} = {replace_sql} "
+                f"WHERE ({db_col} {ilike_op} %s){id_where} "
+                f"AND UPPER(RECOMMENDATION) != 'STAGED'",
+                col_params + [f'%{search}%'] + id_params,
+            )
+            total_replaced += cursor.rowcount
 
-                df_full.at[idx, col] = new_val
-                replaced_count += 1
-                replaced_rows.add(idx)
+            # Update hot cache for modified rows
+            with _bucket_cache_lock:
+                if _bucket_cache is not None:
+                    cache_col = field  # pandas column name
+                    if cache_col in _bucket_cache.df.columns:
+                        ser = _bucket_cache.df[cache_col].astype(str).fillna('')
+                        if case_sensitive:
+                            mask = ser.str.contains(search, case=True, na=False, regex=False)
+                            _bucket_cache.df.loc[mask, cache_col] = ser[mask].str.replace(
+                                search, replace, regex=False
+                            )
+                        else:
+                            mask = ser.str.contains(search, case=False, na=False, regex=False)
+                            _bucket_cache.df.loc[mask, cache_col] = ser[mask].str.replace(
+                                _re.escape(search), replace, case=False, regex=True
+                            )
 
-                # Track in pending changes
-                if idx not in _pending_changes:
-                    _pending_changes[idx] = {}
-                if col not in _pending_changes[idx]:
-                    _pending_changes[idx][col] = (old_val, new_val)
-                else:
-                    orig_old = _pending_changes[idx][col][0]
-                    _pending_changes[idx][col] = (orig_old, new_val)
-
-        return jsonify({
-            'replaced': replaced_count,
-            'rows': len(replaced_rows),
-            'pending_count': len(_pending_changes)
-        })
+        conn.commit()
+        cursor.close()
+        return jsonify({'replaced': total_replaced, 'rows': total_replaced})
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -877,8 +874,7 @@ def search_replace():
 
 @app.route('/api/import_ids', methods=['POST'])
 def import_ids():
-    """Import Source IDs from file — updates in-memory only (pending until Save)"""
-    global _pending_changes
+    """Import Source IDs from file — writes immediately to Snowflake."""
     try:
         data = request.json
         field = data.get('field')
@@ -889,44 +885,51 @@ def import_ids():
         if not source_ids:
             return jsonify({'error': 'No Source IDs provided'}), 400
 
-        df = load_cached_data()
+        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        db_col = field.upper()
+        conn = get_snowflake_connection(DATA_CONFIG)
+        cursor = conn.cursor()
 
-        # Convert source_id column to string for matching
-        df_source_str = df['source_id'].astype(str).str.strip()
-        source_ids_str = [str(cid).strip() for cid in source_ids]
+        source_ids_str = [str(s).strip() for s in source_ids]
+        placeholders = ', '.join(['%s'] * len(source_ids_str))
 
-        # Find matching rows (only those not already checked)
-        mask = df_source_str.isin(source_ids_str) & (df[field] != 1)
-        row_ids = df.index[mask].tolist()
+        # Find matching records not already set to 1
+        cursor.execute(
+            f"SELECT ID, SOURCE_ID, SOURCE_SSN FROM {table} "
+            f"WHERE SOURCE_ID IN ({placeholders}) AND {db_col} != 1",
+            source_ids_str,
+        )
+        rows_to_update = cursor.fetchall()
+        cursor.close()
 
-        if not row_ids:
-            total_found = int(df_source_str.isin(source_ids_str).sum())
-            return jsonify({
-                'success': True,
-                'updated': 0,
-                'pending_count': len(_pending_changes),
-                'message': f'No new matches. {total_found} already checked.'
-            })
+        if not rows_to_update:
+            return jsonify({'success': True, 'updated': 0,
+                            'message': 'No new matches found.'})
 
-        # Update in-memory DataFrame only (vectorized)
-        df.loc[row_ids, field] = 1
+        batch = [
+            {
+                'record_id': row[0],
+                'source_id': str(row[1]),
+                'source_ssn': str(row[2]),
+                'fields': {field: ('0', 1)},
+            }
+            for row in rows_to_update
+        ]
 
-        # Track as pending with (old_value, new_value)
-        for rid in row_ids:
-            if rid not in _pending_changes:
-                _pending_changes[rid] = {}
-            if field not in _pending_changes[rid]:
-                _pending_changes[rid][field] = ('0', 1)
-            else:
-                orig_old = _pending_changes[rid][field][0]
-                _pending_changes[rid][field] = (orig_old, 1)
+        user_id, user_name = _get_user_identity()
+        save_records_batch(DATA_CONFIG, batch, user_id=user_id, user_name=user_name)
+
+        # Update hot cache
+        with _bucket_cache_lock:
+            if _bucket_cache is not None:
+                for b in batch:
+                    _bucket_cache.update_row(b['record_id'], field, 1)
 
         return jsonify({
             'success': True,
-            'updated': len(row_ids),
+            'updated': len(batch),
             'total_in_file': len(source_ids_str),
-            'pending_count': len(_pending_changes),
-            'message': f'Checked {field.upper()} for {len(row_ids)} records (unsaved)'
+            'message': f'Set {field.upper()} for {len(batch)} records',
         })
 
     except Exception as e:
@@ -935,47 +938,9 @@ def import_ids():
 
 @app.route('/api/save_changes', methods=['POST'])
 def save_changes():
-    """Persist all pending changes to Snowflake"""
-    global _pending_changes
-    try:
-        if not _pending_changes:
-            return jsonify({'success': True, 'saved': 0, 'pending_count': 0,
-                            'message': 'Nothing to save'})
-
-        df = load_cached_data()
-        now = datetime.now()
-
-        # Build audit log entries from pending changes
-        log_entries = []
-        for row_id, fields in _pending_changes.items():
-            cid = str(df.at[row_id, 'source_id'])
-            ssn = str(df.at[row_id, 'source_ssn'])
-            for field, change in fields.items():
-                if isinstance(change, tuple):
-                    old_val, new_val = change
-                else:
-                    old_val, new_val = '', change
-                log_entries.append((cid, ssn, field, str(old_val), str(new_val), now))
-
-        # Single connection + single commit for both operations
-        conn = get_snowflake_connection(DATA_CONFIG)
-        cursor = conn.cursor()
-        affected = merge_changes_to_snowflake(DATA_CONFIG, _pending_changes, df, cursor=cursor)
-        write_audit_log_to_snowflake(DATA_CONFIG, log_entries, cursor=cursor)
-        conn.commit()
-
-        saved_count = len(_pending_changes)
-        _pending_changes = {}
-
-        return jsonify({
-            'success': True,
-            'saved': saved_count,
-            'pending_count': 0,
-            'message': f'Saved {saved_count} record(s) to Snowflake ({affected} rows updated)'
-        })
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    """No-op stub — all saves are now immediate. Kept for backward compatibility."""
+    return jsonify({'success': True, 'saved': 0, 'pending_count': 0,
+                    'message': 'All changes are saved immediately'})
 
 
 @app.route('/api/staging_count')
@@ -991,6 +956,7 @@ def staging_count():
             f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != ''"
         )
         count = int(cursor.fetchone()[0])
+        cursor.close()
         return jsonify({'count': count})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -999,15 +965,8 @@ def staging_count():
 @app.route('/api/stage_approved', methods=['POST'])
 def stage_approved():
     """Copy eligible APPROVED records to staging table and flag as STAGED."""
-    global _pending_changes
     try:
-        if _pending_changes:
-            return jsonify({
-                'error': 'Save your pending changes before staging'
-            }), 400
-
-        df = load_cached_data()
-        staged = stage_approved_records(DATA_CONFIG, df)
+        staged = stage_approved_records(DATA_CONFIG, df=None)
 
         if staged == 0:
             return jsonify({
@@ -1016,8 +975,8 @@ def stage_approved():
                 'message': 'No eligible records to stage'
             })
 
-        # Force-reload from Snowflake so in-memory state reflects STAGED flags
-        load_cached_data(force_reload=True)
+        # Invalidate cache so the next request reflects STAGED flags
+        _invalidate_cache()
 
         return jsonify({
             'success': True,
@@ -1039,6 +998,7 @@ def reload_data():
         table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
         cursor.execute(f'SELECT COUNT(*) FROM {table}')
         total = int(cursor.fetchone()[0])
+        cursor.close()
         return jsonify({
             'success': True,
             'records': total,
@@ -1087,10 +1047,11 @@ if __name__ == '__main__':
         print(f'  Account: {DATA_CONFIG.get("account")}')
         print(f'  Database: {DATA_CONFIG.get("database")}.{DATA_CONFIG.get("schema")}.{DATA_CONFIG.get("table")}')
 
-        df = load_cached_data()
-        print(f'  Records loaded: {len(df):,}')
-        if not df.empty and 'recommendation' in df.columns:
-            print(f'  Recommendations: {df["recommendation"].value_counts().to_dict()}')
+        counts = get_bucket_counts(DATA_CONFIG)
+        total_records = sum(counts.values())
+        print(f'  Records in Snowflake: {total_records:,}')
+        if counts:
+            print(f'  Recommendations: {counts}')
 
         print(f'\n  Open: http://localhost:5000')
         print(f'  Press Ctrl+C to stop')
