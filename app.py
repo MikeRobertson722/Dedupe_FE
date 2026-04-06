@@ -2,13 +2,15 @@
 BA Deduplication Review Application
 Web interface for reviewing and updating import_merge_matches data via Snowflake
 """
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, make_response
 import os
 import pandas as pd
 import json
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
+import uuid as _uuid_module
+import threading as _threading
 
 # Load .env file (must be before any config reads os.environ)
 load_dotenv(Path(__file__).parent / '.env')
@@ -17,7 +19,11 @@ from data_loader import (
     load_data, get_snowflake_connection, merge_changes_to_snowflake,
     write_audit_log_to_snowflake, read_audit_log_from_snowflake,
     ensure_snowflake_schema, count_staging_eligible, stage_approved_records,
-    save_grid_setting, load_grid_setting
+    save_grid_setting, load_grid_setting,
+    get_bucket_counts, query_snowflake_page,
+    save_record_immediately, save_records_batch,
+    DataSource, BucketCache, BUCKET_CACHE_MAX_ROWS,
+    _FIELD_TO_DB_COL,
 )
 
 app = Flask(__name__)
@@ -52,12 +58,10 @@ DATA_CONFIG = {
 if not DATA_CONFIG['account']:
     raise ValueError("SNOWFLAKE_ACCOUNT not set. Check your .env file.")
 
-# In-memory cache to avoid re-reading Snowflake on every request
-_df_cache = None
-_df_cache_time = None
-
-# Track unsaved changes: {row_id: {field: (old_value, new_value), ...}, ...}
-_pending_changes = {}
+# Single active BucketCache — shared across all users
+_bucket_cache = None
+_bucket_cache_lock = _threading.Lock()
+CACHE_TTL_SECONDS = 300  # 5 minutes
 
 # Cached ba_config score ranges (loaded once at first stats call)
 _ba_config_cache = None
@@ -104,16 +108,6 @@ DEFAULT_BA_CONFIG = {
     'ZIP_PENALTY_MULT':                         '0.75',
 }
 
-
-def load_cached_data(force_reload=False):
-    """Load data from Snowflake, cached in memory"""
-    global _df_cache, _df_cache_time
-
-    if _df_cache is None or force_reload:
-        _df_cache = load_data(DATA_CONFIG)
-        _df_cache_time = datetime.now()
-
-    return _df_cache
 
 
 def _load_ba_config():
@@ -170,10 +164,76 @@ def _get_source_company_name():
     return DATA_CONFIG.get('source_company_name', 'Source')
 
 
+def _get_or_load_bucket_cache(bucket: str, force: bool = False):
+    """
+    Return the active BucketCache for the given bucket.
+    Loads from Snowflake if the cache is empty, stale, or for a different bucket.
+    Returns None if the bucket has more than BUCKET_CACHE_MAX_ROWS rows (SQL mode).
+    """
+    global _bucket_cache
+
+    with _bucket_cache_lock:
+        if (
+            not force
+            and _bucket_cache is not None
+            and _bucket_cache.bucket == bucket
+            and _bucket_cache.is_fresh(CACHE_TTL_SECONDS)
+        ):
+            return _bucket_cache
+
+        # Check bucket size before loading
+        counts = get_bucket_counts(DATA_CONFIG)
+        bucket_size = counts.get(bucket, 0)
+        if bucket_size > BUCKET_CACHE_MAX_ROWS:
+            _bucket_cache = None
+            return None  # SQL mode
+
+        # Load bucket into cache
+        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        conn = get_snowflake_connection(DATA_CONFIG)
+        df = pd.read_sql_query(
+            f"SELECT * FROM {table} WHERE RECOMMENDATION = %s LIMIT %s",
+            conn,
+            params=(bucket, BUCKET_CACHE_MAX_ROWS),
+        )
+        df.columns = df.columns.str.lower()
+        df = DataSource._normalize_dataframe(df)
+
+        try:
+            _bucket_cache = BucketCache(bucket, df)
+        except ValueError:
+            _bucket_cache = None
+            return None  # Oversized — SQL mode
+
+        return _bucket_cache
+
+
+def _invalidate_cache():
+    """Clear the active bucket cache (call after writes that change recommendation values)."""
+    global _bucket_cache
+    with _bucket_cache_lock:
+        _bucket_cache = None
+
+
+def _get_user_identity():
+    """
+    Return (user_id, user_name) from request cookies.
+    """
+    user_id = request.cookies.get('user_id')
+    user_name = request.cookies.get('user_name')
+    return user_id, user_name
+
+
 @app.route('/')
 def index():
-    return render_template('index.html',
-                           source_company_name=_get_source_company_name())
+    response = make_response(render_template(
+        'index.html',
+        source_company_name=_get_source_company_name()
+    ))
+    if not request.cookies.get('user_id'):
+        new_uid = str(_uuid_module.uuid4())
+        response.set_cookie('user_id', new_uid, max_age=365 * 24 * 3600, samesite='Lax')
+    return response
 
 
 @app.route('/api/recommendations')
