@@ -2,7 +2,6 @@ let gridApi;
 let selectedRows = new Set();
 let editModal;
 let recommendationValues = [];
-let pendingCount = 0;
 let allRowData = [];
 let activeRecFilter = '';
 let recConfig = {};
