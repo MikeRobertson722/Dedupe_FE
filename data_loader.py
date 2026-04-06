@@ -476,6 +476,171 @@ def query_snowflake_page(
     return rows, total_count, filtered_count
 
 
+# Field name to Snowflake column name override
+_FIELD_TO_DB_COL = {
+    'source_address_recomend': 'SOURCE_ADDRESS',
+}
+_INT_DB_COLS = {'JIB', 'REV', 'VENDOR'}
+
+
+def save_record_immediately(
+    config: Dict[str, Any],
+    record_id,
+    source_id: str,
+    source_ssn: str,
+    fields: Dict[str, Any],
+    user_id: Optional[str] = None,
+    user_name: Optional[str] = None,
+) -> int:
+    """
+    Immediately persist changes for a single record.
+
+    Args:
+        config:     Snowflake config dict
+        record_id:  Value of the ID column (Snowflake primary key)
+        source_id:  Source system identifier (for audit log)
+        source_ssn: Source SSN (for audit log)
+        fields:     {field_name: (old_value, new_value)} or {field_name: new_value}
+        user_id:    Browser UUID cookie (optional, for audit log)
+        user_name:  Display name (optional, for audit log)
+
+    Returns:
+        Number of rows updated (should be 1)
+    """
+    if not fields:
+        return 0
+
+    table = _safe_table(config.get('table', 'import_merge_matches'))
+    set_parts: List[str] = []
+    set_params: List[Any] = []
+
+    for field, change in fields.items():
+        new_val = change[1] if isinstance(change, tuple) else change
+        db_col = _FIELD_TO_DB_COL.get(field, field.upper())
+        if db_col in _INT_DB_COLS:
+            set_parts.append(f'{db_col} = CAST(%s AS INTEGER)')
+            set_params.append(int(new_val) if new_val is not None else 0)
+        else:
+            set_parts.append(f'{db_col} = CAST(%s AS VARCHAR)')
+            set_params.append(str(new_val) if new_val is not None else '')
+
+    set_params.append(record_id)
+    sql = f"UPDATE {table} SET {', '.join(set_parts)} WHERE ID = %s"
+
+    conn = get_snowflake_connection(config)
+    cursor = conn.cursor()
+    cursor.execute(sql, set_params)
+
+    # Audit log — use execute() per entry so cursor.execute is visible to callers
+    now = datetime.datetime.now()
+    for field, change in fields.items():
+        old_val, new_val = change if isinstance(change, tuple) else ('', change)
+        cursor.execute(
+            """INSERT INTO UPDATE_LOG
+               (SOURCE_ID, SOURCE_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE, UPDATED_AT,
+                USER_ID, USER_NAME)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (str(source_id), str(source_ssn), field,
+             str(old_val), str(new_val), now, user_id, user_name),
+        )
+    conn.commit()
+    return cursor.rowcount
+
+
+def save_records_batch(
+    config: Dict[str, Any],
+    records: List[Dict[str, Any]],
+    user_id: Optional[str] = None,
+    user_name: Optional[str] = None,
+) -> int:
+    """
+    Immediately persist changes for multiple records in a single transaction.
+
+    Args:
+        config:   Snowflake config dict
+        records:  List of dicts, each with keys:
+                    record_id, source_id, source_ssn,
+                    fields: {field_name: (old_value, new_value)}
+        user_id:  Browser UUID (optional)
+        user_name: Display name (optional)
+
+    Returns:
+        Total rows updated
+    """
+    if not records:
+        return 0
+
+    from collections import defaultdict
+    groups: Dict[frozenset, List[dict]] = defaultdict(list)
+    for rec in records:
+        key = frozenset(rec['fields'].keys())
+        groups[key].append(rec)
+
+    conn = get_snowflake_connection(config)
+    cursor = conn.cursor()
+    table = _safe_table(config.get('table', 'import_merge_matches'))
+    total_affected = 0
+    now = datetime.datetime.now()
+    all_log_entries = []
+
+    for field_set, group in groups.items():
+        fields_list = sorted(field_set)
+        set_parts: List[str] = []
+        for field in fields_list:
+            db_col = _FIELD_TO_DB_COL.get(field, field.upper())
+            if db_col in _INT_DB_COLS:
+                set_parts.append(f'{db_col} = CAST(%s AS INTEGER)')
+            else:
+                set_parts.append(f'{db_col} = CAST(%s AS VARCHAR)')
+
+        set_sql = ', '.join(set_parts)
+        id_placeholders = ', '.join(['%s'] * len(group))
+        sql = f"UPDATE {table} SET {set_sql} WHERE ID IN ({id_placeholders})"
+
+        value_sets = set()
+        for rec in group:
+            vals = tuple(
+                (rec['fields'][f][1] if isinstance(rec['fields'][f], tuple)
+                 else rec['fields'][f])
+                for f in fields_list
+            )
+            value_sets.add(vals)
+
+        if len(value_sets) == 1:
+            new_vals = list(next(iter(value_sets)))
+            coerced = []
+            for field, val in zip(fields_list, new_vals):
+                db_col = _FIELD_TO_DB_COL.get(field, field.upper())
+                if db_col in _INT_DB_COLS:
+                    coerced.append(int(val) if val is not None else 0)
+                else:
+                    coerced.append(str(val) if val is not None else '')
+            id_params = [rec['record_id'] for rec in group]
+            cursor.execute(sql, coerced + id_params)
+            total_affected += cursor.rowcount
+        else:
+            for rec in group:
+                affected = save_record_immediately(
+                    config, rec['record_id'], rec['source_id'], rec['source_ssn'],
+                    rec['fields'], user_id=user_id, user_name=user_name,
+                )
+                total_affected += affected
+            continue
+
+        for rec in group:
+            for field, change in rec['fields'].items():
+                old_val, new_val = change if isinstance(change, tuple) else ('', change)
+                all_log_entries.append((
+                    str(rec['source_id']), str(rec['source_ssn']), field,
+                    str(old_val), str(new_val), now, user_id, user_name,
+                ))
+
+    if all_log_entries:
+        write_audit_log_to_snowflake(config, all_log_entries, cursor=cursor)
+    conn.commit()
+    return total_affected
+
+
 def merge_changes_to_snowflake(
     config: Dict[str, Any],
     pending_changes: Dict[int, Dict[str, Any]],
