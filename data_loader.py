@@ -347,15 +347,18 @@ def get_bucket_counts(config: Dict[str, Any]) -> Dict[str, int]:
     Return a dict of {recommendation_value: row_count} for all buckets.
     Uses a single GROUP BY query — fast even on 2M rows.
     """
-    table = _safe_table(config.get('table', 'import_merge_matches'))
     conn = get_snowflake_connection(config)
     cursor = conn.cursor()
-    cursor.execute(
-        f"SELECT RECOMMENDATION, COUNT(*) AS CNT "
-        f"FROM {table} "
-        f"GROUP BY RECOMMENDATION"
-    )
-    return {row[0]: int(row[1]) for row in cursor.fetchall() if row[0] is not None}
+    try:
+        table = _safe_table(config.get('table', 'import_merge_matches'))
+        cursor.execute(
+            f"SELECT RECOMMENDATION, COUNT(*) AS CNT "
+            f"FROM {table} "
+            f"GROUP BY RECOMMENDATION"
+        )
+        return {row[0]: int(row[1]) for row in cursor.fetchall() if row[0] is not None}
+    finally:
+        cursor.close()
 
 
 # Columns the frontend grid needs — used for SELECT projection
@@ -413,79 +416,81 @@ def query_snowflake_page(
     table = _safe_table(config.get('table', 'import_merge_matches'))
     conn = get_snowflake_connection(config)
     cursor = conn.cursor()
+    try:
+        # --- Build WHERE clause ---
+        conditions: List[str] = []
+        params: List[Any] = []
 
-    # --- Build WHERE clause ---
-    conditions: List[str] = []
-    params: List[Any] = []
+        rec = filters.get('recommendation', '')
+        if rec:
+            rec_values = [v.strip() for v in rec.split(',') if v.strip()]
+            if len(rec_values) == 1:
+                conditions.append('RECOMMENDATION = %s')
+                params.append(rec_values[0])
+            elif rec_values:
+                placeholders = ', '.join(['%s'] * len(rec_values))
+                conditions.append(f'RECOMMENDATION IN ({placeholders})')
+                params.extend(rec_values)
 
-    rec = filters.get('recommendation', '')
-    if rec:
-        rec_values = [v.strip() for v in rec.split(',') if v.strip()]
-        if len(rec_values) == 1:
-            conditions.append('RECOMMENDATION = %s')
-            params.append(rec_values[0])
-        elif rec_values:
-            placeholders = ', '.join(['%s'] * len(rec_values))
-            conditions.append(f'RECOMMENDATION IN ({placeholders})')
-            params.extend(rec_values)
+        ssn_filter = filters.get('ssn_filter', '')
+        if ssn_filter == 'yes':
+            conditions.append('SSN_MATCH = 100')
+        elif ssn_filter == 'no':
+            conditions.append('SSN_MATCH = 0')
+        elif ssn_filter == 'partial':
+            conditions.append('SSN_MATCH > 0 AND SSN_MATCH < 100')
 
-    ssn_filter = filters.get('ssn_filter', '')
-    if ssn_filter == 'yes':
-        conditions.append('SSN_MATCH = 100')
-    elif ssn_filter == 'no':
-        conditions.append('SSN_MATCH = 0')
-    elif ssn_filter == 'partial':
-        conditions.append('SSN_MATCH > 0 AND SSN_MATCH < 100')
+        for col, op in [
+            ('min_name_score', 'NAME_SCORE >= %s'),
+            ('max_name_score', 'NAME_SCORE <= %s'),
+            ('min_addr_score', 'ADDRESS_SCORE >= %s'),
+            ('max_addr_score', 'ADDRESS_SCORE <= %s'),
+        ]:
+            val = filters.get(col)
+            if val is not None:
+                conditions.append(op)
+                params.append(float(val))
 
-    for col, op in [
-        ('min_name_score', 'NAME_SCORE >= %s'),
-        ('max_name_score', 'NAME_SCORE <= %s'),
-        ('min_addr_score', 'ADDRESS_SCORE >= %s'),
-        ('max_addr_score', 'ADDRESS_SCORE <= %s'),
-    ]:
-        val = filters.get(col)
-        if val is not None:
-            conditions.append(op)
-            params.append(float(val))
+        search = filters.get('search', '').strip()
+        if search:
+            text_cols = [
+                'SOURCE_NAME', 'SOURCE_ADDRESS', 'SOURCE_CITY', 'SOURCE_STATE',
+                'SOURCE_ZIP', 'DEC_NAME', 'DEC_ADDRESS', 'DEC_CITY',
+                'DEC_HDRCODE', 'RECOMMENDATION', 'HOW_TO_PROCESS', 'MEMO',
+            ]
+            like_clauses = ' OR '.join(f"{c} ILIKE %s" for c in text_cols)
+            conditions.append(f'({like_clauses})')
+            params.extend([f'%{search}%'] * len(text_cols))
 
-    search = filters.get('search', '').strip()
-    if search:
-        text_cols = [
-            'SOURCE_NAME', 'SOURCE_ADDRESS', 'SOURCE_CITY', 'SOURCE_STATE',
-            'SOURCE_ZIP', 'DEC_NAME', 'DEC_ADDRESS', 'DEC_CITY',
-            'DEC_HDRCODE', 'RECOMMENDATION', 'HOW_TO_PROCESS', 'MEMO',
-        ]
-        like_clauses = ' OR '.join(f"{c} ILIKE %s" for c in text_cols)
-        conditions.append(f'({like_clauses})')
-        params.extend([f'%{search}%'] * len(text_cols))
+        where_sql = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
 
-    where_sql = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+        # --- Total count (no filters) ---
+        cursor.execute(f'SELECT COUNT(*) FROM {table}')
+        total_count = int(cursor.fetchone()[0])
 
-    # --- Total count (no filters) ---
-    cursor.execute(f'SELECT COUNT(*) FROM {table}')
-    total_count = int(cursor.fetchone()[0])
+        # --- Filtered count ---
+        cursor.execute(f'SELECT COUNT(*) FROM {table} {where_sql}', params)
+        filtered_count = int(cursor.fetchone()[0])
 
-    # --- Filtered count ---
-    cursor.execute(f'SELECT COUNT(*) FROM {table} {where_sql}', params)
-    filtered_count = int(cursor.fetchone()[0])
+        # --- Page data ---
+        col_list = ', '.join(_GRID_COLUMNS)
+        order_sql = ''
+        if sort_col and sort_col.lower() in _SORTABLE_COLS:
+            direction = 'DESC' if sort_dir.lower() == 'desc' else 'ASC'
+            order_sql = f'ORDER BY {sort_col.upper()} {direction}'
 
-    # --- Page data ---
-    col_list = ', '.join(_GRID_COLUMNS)
-    order_sql = ''
-    if sort_col and sort_col.lower() in _SORTABLE_COLS:
-        direction = 'DESC' if sort_dir.lower() == 'desc' else 'ASC'
-        order_sql = f'ORDER BY {sort_col.upper()} {direction}'
+        limit_sql = '' if length == -1 else f'LIMIT {int(length)} OFFSET {int(start)}'
 
-    limit_sql = '' if length == -1 else f'LIMIT {int(length)} OFFSET {int(start)}'
+        cursor.execute(
+            f'SELECT {col_list} FROM {table} {where_sql} {order_sql} {limit_sql}',
+            params,
+        )
+        col_names = [desc[0].lower() for desc in cursor.description]
+        rows = [dict(zip(col_names, row)) for row in cursor.fetchall()]
 
-    cursor.execute(
-        f'SELECT {col_list} FROM {table} {where_sql} {order_sql} {limit_sql}',
-        params,
-    )
-    col_names = [desc[0].lower() for desc in cursor.description]
-    rows = [dict(zip(col_names, row)) for row in cursor.fetchall()]
-
-    return rows, total_count, filtered_count
+        return rows, total_count, filtered_count
+    finally:
+        cursor.close()
 
 
 # Field name to Snowflake column name override
@@ -541,22 +546,25 @@ def save_record_immediately(
 
     conn = get_snowflake_connection(config)
     cursor = conn.cursor()
-    cursor.execute(sql, set_params)
+    try:
+        cursor.execute(sql, set_params)
 
-    # Audit log — use execute() per entry so cursor.execute is visible to callers
-    now = datetime.datetime.now()
-    for field, change in fields.items():
-        old_val, new_val = change if isinstance(change, tuple) else ('', change)
-        cursor.execute(
-            """INSERT INTO UPDATE_LOG
-               (SOURCE_ID, SOURCE_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE, UPDATED_AT,
-                USER_ID, USER_NAME)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-            (str(source_id), str(source_ssn), field,
-             str(old_val), str(new_val), now, user_id, user_name),
-        )
-    conn.commit()
-    return cursor.rowcount
+        # Audit log — use execute() per entry so cursor.execute is visible to callers
+        now = datetime.datetime.now()
+        for field, change in fields.items():
+            old_val, new_val = change if isinstance(change, tuple) else ('', change)
+            cursor.execute(
+                """INSERT INTO UPDATE_LOG
+                   (SOURCE_ID, SOURCE_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE, UPDATED_AT,
+                    USER_ID, USER_NAME)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (str(source_id), str(source_ssn), field,
+                 str(old_val), str(new_val), now, user_id, user_name),
+            )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        cursor.close()
 
 
 def save_records_batch(
@@ -595,67 +603,70 @@ def save_records_batch(
     now = datetime.datetime.now()
     all_log_entries = []
 
-    for field_set, group in groups.items():
-        fields_list = sorted(field_set)
-        set_parts: List[str] = []
-        for field in fields_list:
-            db_col = _FIELD_TO_DB_COL.get(field, field.upper())
-            if db_col in _INT_DB_COLS:
-                set_parts.append(f'{db_col} = CAST(%s AS INTEGER)')
-            else:
-                set_parts.append(f'{db_col} = CAST(%s AS VARCHAR)')
-
-        set_sql = ', '.join(set_parts)
-        id_placeholders = ', '.join(['%s'] * len(group))
-        sql = f"UPDATE {table} SET {set_sql} WHERE ID IN ({id_placeholders})"
-
-        value_sets = set()
-        for rec in group:
-            vals = tuple(
-                (rec['fields'][f][1] if isinstance(rec['fields'][f], tuple)
-                 else rec['fields'][f])
-                for f in fields_list
-            )
-            value_sets.add(vals)
-
-        if len(value_sets) == 1:
-            new_vals = list(next(iter(value_sets)))
-            coerced = []
-            for field, val in zip(fields_list, new_vals):
+    try:
+        for field_set, group in groups.items():
+            fields_list = sorted(field_set)
+            set_parts: List[str] = []
+            for field in fields_list:
                 db_col = _FIELD_TO_DB_COL.get(field, field.upper())
                 if db_col in _INT_DB_COLS:
-                    coerced.append(int(val) if val is not None else 0)
+                    set_parts.append(f'{db_col} = CAST(%s AS INTEGER)')
                 else:
-                    coerced.append(str(val) if val is not None else '')
-            id_params = [rec['record_id'] for rec in group]
-            cursor.execute(sql, coerced + id_params)
-            total_affected += cursor.rowcount
-        else:
+                    set_parts.append(f'{db_col} = CAST(%s AS VARCHAR)')
+
+            set_sql = ', '.join(set_parts)
+            id_placeholders = ', '.join(['%s'] * len(group))
+            sql = f"UPDATE {table} SET {set_sql} WHERE ID IN ({id_placeholders})"
+
+            value_sets = set()
             for rec in group:
-                affected = save_record_immediately(
-                    config, rec['record_id'], rec['source_id'], rec['source_ssn'],
-                    rec['fields'], user_id=user_id, user_name=user_name,
+                vals = tuple(
+                    (rec['fields'][f][1] if isinstance(rec['fields'][f], tuple)
+                     else rec['fields'][f])
+                    for f in fields_list
                 )
-                total_affected += affected
-            continue
+                value_sets.add(vals)
 
-        for rec in group:
-            for field, change in rec['fields'].items():
-                old_val, new_val = change if isinstance(change, tuple) else ('', change)
-                all_log_entries.append((
-                    str(rec['source_id']), str(rec['source_ssn']), field,
-                    str(old_val), str(new_val), now, user_id, user_name,
-                ))
+            if len(value_sets) == 1:
+                new_vals = list(next(iter(value_sets)))
+                coerced = []
+                for field, val in zip(fields_list, new_vals):
+                    db_col = _FIELD_TO_DB_COL.get(field, field.upper())
+                    if db_col in _INT_DB_COLS:
+                        coerced.append(int(val) if val is not None else 0)
+                    else:
+                        coerced.append(str(val) if val is not None else '')
+                id_params = [rec['record_id'] for rec in group]
+                cursor.execute(sql, coerced + id_params)
+                total_affected += cursor.rowcount
+            else:
+                for rec in group:
+                    affected = save_record_immediately(
+                        config, rec['record_id'], rec['source_id'], rec['source_ssn'],
+                        rec['fields'], user_id=user_id, user_name=user_name,
+                    )
+                    total_affected += affected
+                continue
 
-    if all_log_entries:
-        cursor.executemany(
-            "INSERT INTO UPDATE_LOG "
-            "(SOURCE_ID, SOURCE_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE, UPDATED_AT, USER_ID, USER_NAME) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            all_log_entries,
-        )
-    conn.commit()
-    return total_affected
+            for rec in group:
+                for field, change in rec['fields'].items():
+                    old_val, new_val = change if isinstance(change, tuple) else ('', change)
+                    all_log_entries.append((
+                        str(rec['source_id']), str(rec['source_ssn']), field,
+                        str(old_val), str(new_val), now, user_id, user_name,
+                    ))
+
+        if all_log_entries:
+            cursor.executemany(
+                "INSERT INTO UPDATE_LOG "
+                "(SOURCE_ID, SOURCE_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE, UPDATED_AT, USER_ID, USER_NAME) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                all_log_entries,
+            )
+        conn.commit()
+        return total_affected
+    finally:
+        cursor.close()
 
 
 def merge_changes_to_snowflake(

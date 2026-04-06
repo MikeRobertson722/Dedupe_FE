@@ -23,7 +23,7 @@ from data_loader import (
     get_bucket_counts, query_snowflake_page,
     save_record_immediately, save_records_batch,
     DataSource, BucketCache, BUCKET_CACHE_MAX_ROWS,
-    _FIELD_TO_DB_COL,
+    _FIELD_TO_DB_COL, _safe_table,
 )
 
 app = Flask(__name__)
@@ -189,7 +189,7 @@ def _get_or_load_bucket_cache(bucket: str, force: bool = False):
             return None  # SQL mode
 
         # Load bucket into cache
-        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         conn = get_snowflake_connection(DATA_CONFIG)
         df = pd.read_sql_query(
             f"SELECT * FROM {table} WHERE RECOMMENDATION = %s LIMIT %s",
@@ -381,7 +381,7 @@ def get_stats():
     try:
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
-        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         try:
             cursor.execute(f"""
                 SELECT
@@ -421,7 +421,7 @@ def get_stats():
 @app.route('/api/record/<int:row_id>')
 def get_record(row_id):
     try:
-        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
         cursor.execute(f'SELECT * FROM {table} WHERE ID = %s', (row_id,))
@@ -444,7 +444,7 @@ def get_record(row_id):
 def get_db_record(uid):
     """Query Snowflake directly by UID (id column) to verify persisted data."""
     try:
-        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
         cursor.execute(f"SELECT * FROM {table} WHERE ID = %s", (uid,))
@@ -489,7 +489,7 @@ def update_record():
         # Block edits on STAGED records — check via quick SQL lookup
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
-        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         try:
             cursor.execute(f'SELECT RECOMMENDATION FROM {table} WHERE ID = %s', (record_id,))
             row = cursor.fetchone()
@@ -532,17 +532,17 @@ def bulk_update():
 
         # Normalise to records_in shape
         if not records_in and row_ids:
-            # Legacy: look up source_id/source_ssn from cache or DB
             records_in = []
-            for rid in row_ids:
-                rec = {'id': rid, 'source_id': '', 'source_ssn': '', 'old_recommendation': ''}
-                if _bucket_cache is not None:
-                    mask = _bucket_cache.df['id'] == rid
-                    if mask.any():
-                        rec['source_id'] = str(_bucket_cache.df.loc[mask, 'source_id'].values[0])
-                        rec['source_ssn'] = str(_bucket_cache.df.loc[mask, 'source_ssn'].values[0])
-                        rec['old_recommendation'] = str(_bucket_cache.df.loc[mask, 'recommendation'].values[0])
-                records_in.append(rec)
+            with _bucket_cache_lock:
+                for rid in row_ids:
+                    rec = {'id': rid, 'source_id': '', 'source_ssn': '', 'old_recommendation': ''}
+                    if _bucket_cache is not None:
+                        mask = _bucket_cache.df['id'] == rid
+                        if mask.any():
+                            rec['source_id'] = str(_bucket_cache.df.loc[mask, 'source_id'].values[0])
+                            rec['source_ssn'] = str(_bucket_cache.df.loc[mask, 'source_ssn'].values[0])
+                            rec['old_recommendation'] = str(_bucket_cache.df.loc[mask, 'recommendation'].values[0])
+                    records_in.append(rec)
 
         # Build batch records
         batch = []
@@ -560,7 +560,7 @@ def bulk_update():
             })
 
         # Filter out STAGED records
-        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         ids_to_check = [b['record_id'] for b in batch]
         if ids_to_check:
             conn = get_snowflake_connection(DATA_CONFIG)
@@ -639,7 +639,7 @@ def bulk_field_update():
         if ids_to_check:
             conn = get_snowflake_connection(DATA_CONFIG)
             cursor = conn.cursor()
-            table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+            table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
             placeholders = ', '.join(['%s'] * len(ids_to_check))
             try:
                 cursor.execute(
@@ -825,7 +825,7 @@ def search_replace():
         else:
             return jsonify({'error': f'Column "{column}" is not searchable'}), 400
 
-        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
 
@@ -914,7 +914,7 @@ def import_ids():
         if not source_ids:
             return jsonify({'error': 'No Source IDs provided'}), 400
 
-        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         db_col = field.upper()
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
@@ -980,7 +980,7 @@ def staging_count():
     try:
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
-        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         try:
             cursor.execute(
                 f"SELECT COUNT(*) FROM {table} "
@@ -1028,7 +1028,7 @@ def reload_data():
         _invalidate_cache()
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
-        table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         try:
             cursor.execute(f'SELECT COUNT(*) FROM {table}')
             total = int(cursor.fetchone()[0])
