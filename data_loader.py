@@ -293,22 +293,20 @@ def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
             cursor.execute("ALTER TABLE UPDATE_LOG RENAME COLUMN CANVAS_ID TO SOURCE_ID")
         if 'canvas_ssn' in log_cols and 'source_ssn' not in log_cols:
             cursor.execute("ALTER TABLE UPDATE_LOG RENAME COLUMN CANVAS_SSN TO SOURCE_SSN")
+        if 'user_id' not in log_cols:
+            try:
+                cursor.execute("ALTER TABLE UPDATE_LOG ADD COLUMN USER_ID VARCHAR")
+                print("  Added USER_ID to UPDATE_LOG")
+            except Exception as e:
+                print(f"  Adding USER_ID to UPDATE_LOG skipped: {e}")
+        if 'user_name' not in log_cols:
+            try:
+                cursor.execute("ALTER TABLE UPDATE_LOG ADD COLUMN USER_NAME VARCHAR")
+                print("  Added USER_NAME to UPDATE_LOG")
+            except Exception as e:
+                print(f"  Adding USER_NAME to UPDATE_LOG skipped: {e}")
     except Exception as e:
         print(f"  UPDATE_LOG column rename skipped: {e}")
-
-    # Add USER_ID and USER_NAME columns to UPDATE_LOG if missing
-    if 'user_id' not in log_cols:
-        try:
-            cursor.execute("ALTER TABLE UPDATE_LOG ADD COLUMN USER_ID VARCHAR")
-            print("  Added USER_ID to UPDATE_LOG")
-        except Exception as e:
-            print(f"  Adding USER_ID to UPDATE_LOG skipped: {e}")
-    if 'user_name' not in log_cols:
-        try:
-            cursor.execute("ALTER TABLE UPDATE_LOG ADD COLUMN USER_NAME VARCHAR")
-            print("  Added USER_NAME to UPDATE_LOG")
-        except Exception as e:
-            print(f"  Adding USER_NAME to UPDATE_LOG skipped: {e}")
 
     # Ensure GRID_SETTINGS table exists
     cursor.execute("""
