@@ -19,8 +19,6 @@ def test_connection_lock_is_threading_lock():
 # BucketCache tests
 # ---------------------------------------------------------------------------
 
-BUCKET_CACHE_MAX_ROWS = 100_000
-
 
 def _make_df(n=10, bucket='REVIEW'):
     """Create a small test DataFrame mimicking import_merge_matches."""

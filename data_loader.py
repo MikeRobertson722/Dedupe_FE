@@ -194,7 +194,10 @@ class BucketCache:
         self.bucket = bucket
         self.df = df.copy()
         self.load_time = datetime.datetime.now()
-        self.row_count = len(df)
+
+    @property
+    def row_count(self) -> int:
+        return len(self.df)
 
     def is_fresh(self, ttl_seconds: int = 300) -> bool:
         """Return True if the cache is younger than ttl_seconds."""
