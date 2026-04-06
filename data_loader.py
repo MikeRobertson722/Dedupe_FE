@@ -5,6 +5,7 @@ Supports loading data from Snowflake
 import os
 import time
 import threading
+import datetime
 import pandas as pd
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -17,6 +18,9 @@ _SF_CONN_TTL = 60         # seconds to trust a connection without re-checking
 
 # Thread safety for connection management
 _conn_lock = threading.Lock()
+
+# BucketCache configuration
+BUCKET_CACHE_MAX_ROWS = 100_000
 
 
 def _build_conn_params(config: Dict[str, Any]) -> dict:
@@ -172,6 +176,40 @@ class DataSource:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
         return df
+
+
+class BucketCache:
+    """
+    In-memory cache for a single recommendation bucket (e.g., 'REVIEW').
+    Holds up to BUCKET_CACHE_MAX_ROWS rows as a pandas DataFrame.
+    Thread-safe reads; caller is responsible for serialising writes.
+    """
+
+    def __init__(self, bucket: str, df: pd.DataFrame):
+        if len(df) > BUCKET_CACHE_MAX_ROWS:
+            raise ValueError(
+                f"DataFrame with {len(df):,} rows exceeds "
+                f"BUCKET_CACHE_MAX_ROWS ({BUCKET_CACHE_MAX_ROWS:,})"
+            )
+        self.bucket = bucket
+        self.df = df.copy()
+        self.load_time = datetime.datetime.now()
+        self.row_count = len(df)
+
+    def is_fresh(self, ttl_seconds: int = 300) -> bool:
+        """Return True if the cache is younger than ttl_seconds."""
+        age = (datetime.datetime.now() - self.load_time).total_seconds()
+        return age < ttl_seconds
+
+    def update_row(self, row_id, field: str, value) -> None:
+        """
+        Update a single field for the row whose 'id' column equals row_id.
+        No-op if row_id is not found in the cache.
+        """
+        mask = self.df['id'] == row_id
+        if not mask.any():
+            return
+        self.df.loc[mask, field] = value
 
 
 def ensure_snowflake_schema(config: Dict[str, Any]) -> None:
