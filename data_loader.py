@@ -16,6 +16,18 @@ _sf_config_hash = None
 _sf_conn_verified_at = 0  # timestamp of last successful health check
 _SF_CONN_TTL = 60         # seconds to trust a connection without re-checking
 
+import re as _re
+_VALID_IDENTIFIER = _re.compile(r'^[A-Z0-9_]+$')
+
+
+def _safe_table(name: str) -> str:
+    """Validate and return an uppercase Snowflake identifier (prevents SQL injection via table name)."""
+    upper = name.upper()
+    if not _VALID_IDENTIFIER.match(upper):
+        raise ValueError(f"Invalid table identifier: {name!r}")
+    return upper
+
+
 # Thread safety for connection management
 _conn_lock = threading.Lock()
 
@@ -323,7 +335,7 @@ def get_bucket_counts(config: Dict[str, Any]) -> Dict[str, int]:
     Return a dict of {recommendation_value: row_count} for all buckets.
     Uses a single GROUP BY query — fast even on 2M rows.
     """
-    table = config.get('table', 'import_merge_matches').upper()
+    table = _safe_table(config.get('table', 'import_merge_matches'))
     conn = get_snowflake_connection(config)
     cursor = conn.cursor()
     cursor.execute(
@@ -350,10 +362,12 @@ _GRID_COLUMNS = [
 
 # Columns safe to sort by (prevents SQL injection via ORDER BY)
 _SORTABLE_COLS = {
-    'id', 'ssn_match', 'name_score', 'address_score', 'recommendation',
-    'source_name', 'source_address', 'source_city', 'source_id',
-    'dec_name', 'dec_address', 'dec_city', 'dec_hdrcode',
-    'dec_address_looked_up', 'jib', 'rev', 'vendor', 'how_to_process', 'memo',
+    'id', 'ssn_match', 'name_score', 'address_score', 'nameaddrscore',
+    'recommendation', 'source_name', 'source_address', 'source_city',
+    'source_state', 'source_zip', 'source_id', 'source_addrseq',
+    'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
+    'dec_hdrcode', 'dec_address_looked_up', 'jib', 'rev', 'vendor',
+    'how_to_process', 'memo', 'address_reason', 'run_id',
 }
 
 
@@ -384,7 +398,7 @@ def query_snowflake_page(
     Returns:
         (rows_as_dicts, total_count, filtered_count)
     """
-    table = config.get('table', 'import_merge_matches').upper()
+    table = _safe_table(config.get('table', 'import_merge_matches'))
     conn = get_snowflake_connection(config)
     cursor = conn.cursor()
 

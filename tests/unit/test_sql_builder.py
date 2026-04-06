@@ -6,7 +6,8 @@ import pytest
 def _make_cursor(rows=None, description=None, rowcount=1):
     cursor = MagicMock()
     cursor.fetchall.return_value = rows or []
-    cursor.fetchone.return_value = (rows or [[None]])[0] if rows else None
+    _first_row = (rows or [[None]])[0] if rows else (0,)
+    cursor.fetchone.side_effect = [_first_row, _first_row]
     cursor.description = description or [('COUNT(*)',)]
     cursor.rowcount = rowcount
     return cursor
