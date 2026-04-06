@@ -587,7 +587,7 @@ function initGrid(savedColState, savedFilterState) {
                             value: params.newValue || '',
                             old_value: params.oldValue || '',
                         }),
-                        success: function(data) { showToast('Saved', 'success'); },
+                        success: function(data) { showToast('Saved', 'success'); refreshBucketCounts(); },
                         error: function(xhr) { showToast('Save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
                     });
                 }
@@ -688,6 +688,28 @@ function refreshGridData(onDone) {
         });
 }
 
+// ── Bucket count / cache status helpers ──
+function refreshBucketCounts() {
+    $.get('/api/bucket-counts', function(counts) {
+        $('.bucket-count').each(function() {
+            var bucket = $(this).data('bucket');
+            var count = counts[bucket];
+            $(this).text(count !== undefined ? count.toLocaleString() : '');
+        });
+    });
+}
+
+function refreshCacheStatus() {
+    $.get('/api/cache-status', function(status) {
+        var badge = $('#cacheModeBadge');
+        if (status.mode === 'cached') {
+            badge.text('Cached').removeClass('bg-secondary').addClass('bg-info text-dark').show();
+        } else {
+            badge.text('Live query').removeClass('bg-info text-dark').addClass('bg-secondary').show();
+        }
+    });
+}
+
 // ── Document ready ──
 $(document).ready(function() {
     // --- User identity ---
@@ -745,6 +767,35 @@ $(document).ready(function() {
     });
 
     initUserIdentity();
+
+    // Initial load
+    refreshBucketCounts();
+    refreshCacheStatus();
+
+    // Refresh counts every 5 minutes
+    setInterval(refreshBucketCounts, 5 * 60 * 1000);
+    setInterval(refreshCacheStatus, 60 * 1000);
+
+    // Refresh button — calls /api/reload then refreshes grid and counts
+    $('#refreshBtn').on('click', function() {
+        $(this).prop('disabled', true);
+        $('#cacheLoadingBadge').show();
+        $.ajax({
+            url: '/api/reload', method: 'POST',
+            success: function(data) {
+                showToast(data.message || 'Cache refreshed', 'success');
+                refreshBucketCounts();
+                refreshCacheStatus();
+                loadStats();
+                refreshGridData(function() { $('#cacheLoadingBadge').hide(); });
+            },
+            error: function(xhr) {
+                showToast('Refresh failed', 'danger');
+                $('#cacheLoadingBadge').hide();
+            },
+            complete: function() { $('#refreshBtn').prop('disabled', false); }
+        });
+    });
 
     editModal = new bootstrap.Modal(document.getElementById('editModal'));
     var recsReq     = $.get('/api/recommendations');
@@ -935,7 +986,7 @@ $(document).ready(function() {
                         old_value: oldChkVal !== undefined ? oldChkVal : '',
                     }),
                     success: function() {
-                        if (++completed === rowIds.length) showToast('Set ' + field.toUpperCase() + ' on ' + rowIds.length + ' rows', 'success');
+                        if (++completed === rowIds.length) { showToast('Set ' + field.toUpperCase() + ' on ' + rowIds.length + ' rows', 'success'); refreshBucketCounts(); }
                     },
                     error: function() { showToast('Toggle failed', 'error'); }
                 });
@@ -957,7 +1008,7 @@ $(document).ready(function() {
                     value: value,
                     old_value: oldVal,
                 }),
-                success: function(data) { showToast('Saved', 'success'); },
+                success: function(data) { showToast('Saved', 'success'); refreshBucketCounts(); },
                 error: function(xhr) { showToast('Save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
             });
         }
@@ -1070,7 +1121,7 @@ $(document).ready(function() {
                     value: newVal,
                     old_value: curVal,
                 }),
-                success: function(data) { showToast('Saved', 'success'); },
+                success: function(data) { showToast('Saved', 'success'); refreshBucketCounts(); },
                 error: function(xhr) { showToast('Memo save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
             });
             var rowNode = gridApi.getRowNode(String(rowId));
@@ -1196,7 +1247,7 @@ function loadStats() {
             html += '<div class="col">' +
                 '<div class="card rec-card" style="border-left: 4px solid ' + color + '; cursor:pointer;" onclick="filterByRec(\'' + rec + '\')" title="' + tip + '">' +
                 '<div class="card-body py-1 px-2" style="line-height:1.4;">' +
-                '<div class="fw-bold text-truncate" style="font-size:0.82rem;">' + rec + ' - ' + count.toLocaleString() + ' <span class="text-muted fw-normal">(' + pct + '%)</span></div>' +
+                '<div class="fw-bold text-truncate" style="font-size:0.82rem;">' + rec + ' - ' + count.toLocaleString() + ' <span class="text-muted fw-normal">(' + pct + '%)</span> <span class="badge bg-secondary bucket-count" data-bucket="' + rec + '" style="font-size:0.65rem;"></span></div>' +
                 '</div></div></div>';
         });
         $('#recBreakdown').html(html);
@@ -1205,6 +1256,7 @@ function loadStats() {
 
 function filterByRec(rec) {
     activeRecFilter = rec;
+    $('#cacheLoadingBadge').show();
     $('#ssnFilter').val('');
     var cfg = recConfig[rec];
     if (cfg) {
@@ -1220,6 +1272,8 @@ function filterByRec(rec) {
     }
     onExternalFilterChanged();
     updateSelectionInfo();
+    $('#cacheLoadingBadge').hide();
+    refreshCacheStatus();
 }
 
 function filterByStat(type) {
@@ -1499,17 +1553,6 @@ function exportData() {
     gridApi.exportDataAsCsv({
         fileName: 'matches_export_' + new Date().toISOString().slice(0, 10) + '.csv'
     });
-}
-
-// ── Save pending changes (kept for legacy UI; immediate saves make this a no-op) ──
-function saveChanges() {
-    showToast('All changes are saved immediately', 'info');
-}
-
-function updateSaveBtn() {
-    // immediate save — no pending state tracking needed
-    var btn = $('#saveChangesBtn');
-    if (btn.length) btn.prop('disabled', false);
 }
 
 // ── Staging ──

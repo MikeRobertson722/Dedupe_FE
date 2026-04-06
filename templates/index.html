@@ -105,6 +105,13 @@
                 <button class="btn btn-outline-secondary btn-sm ms-1" onclick="openSearchReplace()" title="Search &amp; Replace updates only the records currently visible in the grid." style="height:28px;padding:2px 6px;font-size:0.75rem;">
                     <i class="fas fa-exchange-alt"></i> Search &amp; Replace
                 </button>
+                <span id="cacheModeBadge" class="badge bg-info text-dark ms-2" title="Data source mode" style="display:none;"></span>
+                <span id="cacheLoadingBadge" class="badge bg-warning text-dark ms-2" style="display:none;">
+                  <span class="spinner-border spinner-border-sm me-1" role="status"></span>Loading&hellip;
+                </span>
+                <button type="button" class="btn btn-outline-secondary btn-sm ms-1" id="refreshBtn" title="Refresh data from Snowflake" style="height:28px;padding:2px 6px;font-size:0.75rem;">
+                  <i class="fas fa-sync-alt"></i> Refresh
+                </button>
             </div>
             <div class="text-muted small" id="selectionInfo">No records selected</div>
                 <button class="btn btn-success btn-sm ms-2" onclick="bulkApprove()" id="bulkApproveBtn" disabled>
@@ -125,9 +132,6 @@
                 </button>
                 <button class="btn btn-warning btn-sm" id="stageApprovedBtn" onclick="stageApproved()" disabled title="Move all approved records with a Process value to the staging table">
                     <i class="fas fa-paper-plane"></i> Stage Approved<span class="stage-count"></span>
-                </button>
-                <button class="btn btn-success btn-sm" id="saveChangesBtn" onclick="saveChanges()" disabled>
-                    <i class="fas fa-save"></i> Save Changes<span class="save-count"></span>
                 </button>
             </div>
         </div>
