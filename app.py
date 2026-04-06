@@ -1056,7 +1056,6 @@ def bucket_counts():
 @app.route('/api/cache-status')
 def cache_status():
     """Return current cache state for the mode badge."""
-    import datetime
     with _bucket_cache_lock:
         if _bucket_cache is None:
             return jsonify({'mode': 'sql', 'bucket': None, 'row_count': 0,
