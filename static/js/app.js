@@ -579,9 +579,17 @@ function initGrid(savedColState, savedFilterState) {
                     pushUndo({ type: 'single', changes: [{ rowId: params.data._row_id, field: fld, oldValue: params.oldValue || '', newValue: params.newValue || '' }] });
                     $.ajax({
                         url: '/api/update', method: 'POST', contentType: 'application/json',
-                        data: JSON.stringify({ row_id: params.data._row_id, field: fld, value: params.newValue || '' }),
-                        success: function(data) { pendingCount = data.pending_count || 0; updateSaveBtn(); },
-                        error: function() { showToast('Update failed', 'error'); }
+                        data: JSON.stringify({
+                            row_id: params.data._row_id,
+                            id: params.data.id,
+                            source_id: params.data.source_id,
+                            source_ssn: params.data.source_ssn,
+                            field: fld,
+                            value: params.newValue || '',
+                            old_value: params.oldValue || '',
+                        }),
+                        success: function(data) { showToast('Saved', 'success'); },
+                        error: function(xhr) { showToast('Save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
                     });
                 }
             }
@@ -739,8 +747,7 @@ $(document).ready(function() {
                 data: JSON.stringify({ field: field, source_ids: ids }),
                 success: function(data) {
                     showToast(data.message, 'success');
-                    pendingCount = data.pending_count || 0;
-                    updateSaveBtn();
+                    // immediate save — no pending state
                     refreshGridData();
                 },
                 error: function(xhr) { showToast(xhr.responseJSON ? xhr.responseJSON.error : 'Import failed', 'error'); }
@@ -858,11 +865,21 @@ $(document).ready(function() {
             if (undoChanges.length > 0) pushUndo({ type: 'bulk', changes: undoChanges });
             var completed = 0;
             rowIds.forEach(function(rid) {
+                var chkNode = gridApi.getRowNode(String(rid));
+                var chkData = chkNode ? chkNode.data : {};
+                var oldChkVal = undoChanges.filter(function(c) { return c.rowId === rid; }).map(function(c) { return c.oldValue; })[0];
                 $.ajax({
                     url: '/api/update', method: 'POST', contentType: 'application/json',
-                    data: JSON.stringify({ row_id: rid, field: field, value: value }),
-                    success: function(data) {
-                        pendingCount = data.pending_count || 0; updateSaveBtn();
+                    data: JSON.stringify({
+                        row_id: rid,
+                        id: chkData.id,
+                        source_id: chkData.source_id,
+                        source_ssn: chkData.source_ssn,
+                        field: field,
+                        value: value,
+                        old_value: oldChkVal !== undefined ? oldChkVal : '',
+                    }),
+                    success: function() {
                         if (++completed === rowIds.length) showToast('Set ' + field.toUpperCase() + ' on ' + rowIds.length + ' rows', 'success');
                     },
                     error: function() { showToast('Toggle failed', 'error'); }
@@ -872,22 +889,42 @@ $(document).ready(function() {
             var rowId = parseInt($(this).data('row-id'));
             var oldVal = value ? 0 : 1;
             pushUndo({ type: 'single', changes: [{ rowId: rowId, field: field, oldValue: oldVal, newValue: value }] });
+            var singleNode = gridApi.getRowNode(String(rowId));
+            var singleData = singleNode ? singleNode.data : {};
             $.ajax({
                 url: '/api/update', method: 'POST', contentType: 'application/json',
-                data: JSON.stringify({ row_id: rowId, field: field, value: value }),
-                success: function(data) { pendingCount = data.pending_count || 0; updateSaveBtn(); },
-                error: function() { showToast('Toggle failed', 'error'); }
+                data: JSON.stringify({
+                    row_id: rowId,
+                    id: singleData.id,
+                    source_id: singleData.source_id,
+                    source_ssn: singleData.source_ssn,
+                    field: field,
+                    value: value,
+                    old_value: oldVal,
+                }),
+                success: function(data) { showToast('Saved', 'success'); },
+                error: function(xhr) { showToast('Save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
             });
         }
     });
 
     // Process inline dropdown — single record update
-    function saveProcessValue(rowId, value) {
+    function saveProcessValue(rowId, value, oldValue) {
+        var procNode = gridApi.getRowNode(String(rowId));
+        var procData = procNode ? procNode.data : {};
         $.ajax({
             url: '/api/update', method: 'POST', contentType: 'application/json',
-            data: JSON.stringify({ row_id: rowId, field: 'how_to_process', value: value }),
-            success: function(data) { pendingCount = data.pending_count || 0; updateSaveBtn(); },
-            error: function() { showToast('Update failed', 'error'); }
+            data: JSON.stringify({
+                row_id: rowId,
+                id: procData.id,
+                source_id: procData.source_id,
+                source_ssn: procData.source_ssn,
+                field: 'how_to_process',
+                value: value,
+                old_value: oldValue || '',
+            }),
+            success: function(data) { showToast('Saved', 'success'); },
+            error: function(xhr) { showToast('Save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
         });
     }
 
@@ -896,7 +933,7 @@ $(document).ready(function() {
         $.ajax({
             url: '/api/bulk_field_update', method: 'POST', contentType: 'application/json',
             data: JSON.stringify({ row_ids: rowIds, field: 'how_to_process', value: value }),
-            success: function(data) { pendingCount = data.pending_count || 0; updateSaveBtn(); },
+            success: function(data) { /* immediate save — no pending state */ },
             error: function() { showToast('Bulk update failed', 'error'); }
         });
     }
@@ -943,7 +980,7 @@ $(document).ready(function() {
         } else {
             pushUndo({ type: 'single', changes: [{ rowId: rowId, field: 'how_to_process', oldValue: oldValue, newValue: newValue }] });
             if (rowNode) rowNode.setDataValue('how_to_process', newValue);
-            saveProcessValue(rowId, newValue);
+            saveProcessValue(rowId, newValue, oldValue);
         }
     });
 
@@ -965,10 +1002,21 @@ $(document).ready(function() {
             if (newVal !== curVal) {
                 pushUndo({ type: 'single', changes: [{ rowId: rowId, field: 'memo', oldValue: curVal, newValue: newVal }] });
             }
+            var memoNode = gridApi.getRowNode(String(rowId));
+            var memoData = memoNode ? memoNode.data : {};
             $.ajax({
                 url: '/api/update', method: 'POST', contentType: 'application/json',
-                data: JSON.stringify({ row_id: rowId, field: 'memo', value: newVal }),
-                error: function() { showToast('Memo save failed', 'error'); }
+                data: JSON.stringify({
+                    row_id: rowId,
+                    id: memoData.id,
+                    source_id: memoData.source_id,
+                    source_ssn: memoData.source_ssn,
+                    field: 'memo',
+                    value: newVal,
+                    old_value: curVal,
+                }),
+                success: function(data) { showToast('Saved', 'success'); },
+                error: function(xhr) { showToast('Memo save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
             });
             var rowNode = gridApi.getRowNode(String(rowId));
             if (rowNode) rowNode.setDataValue('memo', newVal);
@@ -1002,17 +1050,27 @@ function applyChanges(changes, direction, callback) {
     window._bulkProcessUpdate = true;
     changes.forEach(function(ch) {
         var val = direction === 'undo' ? ch.oldValue : ch.newValue;
+        var oldVal = direction === 'undo' ? ch.newValue : ch.oldValue;
         if (ch.field === 'recommendation') hasRecChange = true;
+        var undoNode = gridApi.getRowNode(String(ch.rowId));
+        var undoData = undoNode ? undoNode.data : {};
         $.ajax({
             url: '/api/update', method: 'POST', contentType: 'application/json',
-            data: JSON.stringify({ row_id: ch.rowId, field: ch.field, value: val }),
+            data: JSON.stringify({
+                row_id: ch.rowId,
+                id: undoData.id,
+                source_id: undoData.source_id,
+                source_ssn: undoData.source_ssn,
+                field: ch.field,
+                value: val,
+                old_value: oldVal,
+            }),
             success: function(data) {
-                pendingCount = data.pending_count || 0;
+                // immediate save — no pending state
                 var rowNode = gridApi.getRowNode(String(ch.rowId));
                 if (rowNode) rowNode.setDataValue(ch.field, val);
                 if (++completed === changes.length) {
                     setTimeout(function() { window._bulkProcessUpdate = false; }, 0);
-                    updateSaveBtn();
                     if (hasRecChange) loadStats();
                     if (callback) callback();
                 }
@@ -1020,7 +1078,6 @@ function applyChanges(changes, direction, callback) {
             error: function() {
                 if (++completed === changes.length) {
                     setTimeout(function() { window._bulkProcessUpdate = false; }, 0);
-                    updateSaveBtn();
                     if (hasRecChange) loadStats();
                     if (callback) callback();
                 }
@@ -1107,7 +1164,6 @@ function filterByRec(rec) {
         $('#maxAddrScore').val('');
     }
     onExternalFilterChanged();
-    updateSaveBtn();
     updateSelectionInfo();
 }
 
@@ -1138,16 +1194,13 @@ function clearFilters() {
     $('#quickFilterInput').val('');
     if (gridApi) gridApi.setGridOption('quickFilterText', '');
     onExternalFilterChanged();
-    updateSaveBtn();
     updateSelectionInfo();
 }
 
 function refreshData() {
-    if (pendingCount > 0 && !confirm('You have unsaved changes. Refresh will discard them. Continue?')) return;
     showToast('Reloading from Snowflake...', 'info');
     $.post('/api/reload', function(data) {
-        pendingCount = 0;
-        updateSaveBtn();
+        // immediate save — no pending state
         loadStats();
         refreshGridData();
         showToast(data.message, 'success');
@@ -1184,6 +1237,9 @@ function updateAddrLineCounters() {
 function editRecord(rowId) {
     $.get('/api/record/' + rowId, function(d) {
         $('#editRowId').val(d._row_id);
+        $('#editRecordId').val(d.id);
+        $('#editSourceIdHidden').val(d.source_id);
+        $('#editSourceSsnHidden').val(d.source_ssn);
         $('#editSourceName').val(d.source_name || '');
         $('#editSourceAddress').val(d.source_address || '');
         updateAddrLineCounters();
@@ -1239,14 +1295,30 @@ function saveRecord() {
 
     var pending = Object.keys(fields).length;
     var errors = [];
+    var modalRecordId = $('#editRecordId').val() || rowId;
+    var modalSourceId = $('#editSourceIdHidden').val() || '';
+    var modalSourceSsn = $('#editSourceSsnHidden').val() || '';
+
+    // Retrieve the current row data to get old values for each field
+    var editNode = gridApi.getRowNode(String(rowId));
+    var editData = editNode ? editNode.data : {};
 
     Object.entries(fields).forEach(function(entry) {
         var field = entry[0], value = entry[1];
+        var oldValue = editData[field] !== undefined ? String(editData[field] || '') : '';
         $.ajax({
             url: '/api/update', method: 'POST', contentType: 'application/json',
-            data: JSON.stringify({ row_id: rowId, field: field, value: value }),
+            data: JSON.stringify({
+                row_id: rowId,
+                id: modalRecordId,
+                source_id: modalSourceId,
+                source_ssn: modalSourceSsn,
+                field: field,
+                value: value,
+                old_value: oldValue,
+            }),
             success: function(data) {
-                pendingCount = data.pending_count || 0;
+                // immediate save — no pending state
                 if (--pending === 0) onSaveDone(errors);
             },
             error: function() { errors.push(field); if (--pending === 0) onSaveDone(errors); }
@@ -1256,9 +1328,8 @@ function saveRecord() {
 
 function onSaveDone(errors) {
     if (errors.length === 0) {
-        showToast('Changes saved to memory (click Save to persist)', 'success');
+        showToast('Changes saved', 'success');
         editModal.hide();
-        updateSaveBtn();
         refreshGridData();
         loadStats();
     } else {
@@ -1278,18 +1349,26 @@ function quickApprove(rowId) {
     showConfirm('Approve Record', '<i class="fas fa-check-circle text-success fa-2x mb-2"></i><br>Approve this record?', function() {
         var rowNode = gridApi.getRowNode(String(rowId));
         var oldVal = rowNode ? (rowNode.data.recommendation || '') : '';
+        var approveData = rowNode ? rowNode.data : {};
         pushUndo({ type: 'single', changes: [{ rowId: rowId, field: 'recommendation', oldValue: oldVal, newValue: 'APPROVED' }] });
         $.ajax({
             url: '/api/update', method: 'POST', contentType: 'application/json',
-            data: JSON.stringify({ row_id: rowId, field: 'recommendation', value: 'APPROVED' }),
+            data: JSON.stringify({
+                row_id: rowId,
+                id: approveData.id,
+                source_id: approveData.source_id,
+                source_ssn: approveData.source_ssn,
+                field: 'recommendation',
+                value: 'APPROVED',
+                old_value: oldVal,
+            }),
             success: function(data) {
-                showToast('Approved (unsaved)', 'success');
-                pendingCount = data.pending_count || 0;
-                updateSaveBtn();
+                showToast('Approved', 'success');
+                // immediate save — no pending state
                 if (rowNode) rowNode.setDataValue('recommendation', 'APPROVED');
                 loadStats();
             },
-            error: function() { showToast('Failed', 'error'); }
+            error: function(xhr) { showToast('Save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
         });
     });
 }
@@ -1311,36 +1390,32 @@ function bulkApprove() {
             }
         });
         if (undoChanges.length > 0) pushUndo({ type: 'bulk', changes: undoChanges });
+        var bulkRecords = [];
+        gridApi.forEachNode(function(node) {
+            if (node.data && selectedRows.has(node.data._row_id)) {
+                bulkRecords.push({
+                    id: node.data.id,
+                    source_id: node.data.source_id,
+                    source_ssn: node.data.source_ssn,
+                    old_recommendation: node.data.recommendation || '',
+                });
+            }
+        });
         $.ajax({
             url: '/api/bulk_update', method: 'POST', contentType: 'application/json',
-            data: JSON.stringify({ row_ids: Array.from(selectedRows), recommendation: 'APPROVED', process_values: processValues }),
+            data: JSON.stringify({ records: bulkRecords, recommendation: 'APPROVED', process_values: processValues }),
             success: function(data) {
                 var approved = data.updated || 0;
-                pendingCount = data.pending_count || 0;
+                // immediate save — no pending state
                 gridApi.deselectAll();
                 selectedRows.clear();
                 updateSelectionInfo();
-                // Auto-save immediately after bulk approve
-                $.ajax({
-                    url: '/api/save_changes', method: 'POST', contentType: 'application/json',
-                    data: JSON.stringify({}),
-                    success: function(saveData) {
-                        pendingCount = saveData.pending_count || 0;
-                        updateSaveBtn();
-                        refreshGridData();
-                        loadStats();
-                        loadStagingCount();
-                        showToast('Approved and saved ' + approved + ' record' + (approved !== 1 ? 's' : ''), 'success');
-                    },
-                    error: function(xhr) {
-                        updateSaveBtn();
-                        refreshGridData();
-                        loadStats();
-                        showToast('Approved but save failed: ' + (xhr.responseJSON ? xhr.responseJSON.error : 'unknown error'), 'error');
-                    }
-                });
+                refreshGridData();
+                loadStats();
+                loadStagingCount();
+                showToast('Approved ' + approved + ' record' + (approved !== 1 ? 's' : ''), 'success');
             },
-            error: function() { showToast('Bulk approve failed', 'error'); }
+            error: function(xhr) { showToast('Bulk approve failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
         });
     });
 }
@@ -1371,34 +1446,15 @@ function exportData() {
     });
 }
 
-// ── Save pending changes ──
+// ── Save pending changes (kept for legacy UI; immediate saves make this a no-op) ──
 function saveChanges() {
-    if (pendingCount === 0) { showToast('Nothing to save', 'info'); return; }
-    var btn = $('#saveChangesBtn');
-    btn.prop('disabled', true);
-    $.ajax({
-        url: '/api/save_changes', method: 'POST', contentType: 'application/json',
-        data: JSON.stringify({}),
-        success: function(data) {
-            pendingCount = data.pending_count || 0;
-            updateSaveBtn();
-            refreshGridData();
-            loadStats();
-            loadStagingCount();
-            showToast(data.message, 'success');
-        },
-        error: function(xhr) {
-            showToast(xhr.responseJSON ? xhr.responseJSON.error : 'Save failed', 'error');
-            updateSaveBtn();
-        }
-    });
+    showToast('All changes are saved immediately', 'info');
 }
 
 function updateSaveBtn() {
+    // immediate save — no pending state tracking needed
     var btn = $('#saveChangesBtn');
-    var stagedMode = activeRecFilter.toUpperCase() === 'STAGED';
-    btn.prop('disabled', pendingCount === 0 || stagedMode);
-    btn.find('.save-count').text(pendingCount > 0 ? ' (' + pendingCount + ')' : '');
+    if (btn.length) btn.prop('disabled', false);
 }
 
 // ── Staging ──
@@ -1418,10 +1474,6 @@ function updateStagingBtn() {
 }
 
 function stageApproved() {
-    if (pendingCount > 0) {
-        showToast('Save your pending changes before staging', 'warning');
-        return;
-    }
     if (stagingCount === 0) {
         showToast('No eligible records to stage', 'info');
         return;
@@ -1742,8 +1794,7 @@ function srReplaceCurrent() {
         }),
         success: function(data) {
             if (data.replaced > 0) {
-                pendingCount = data.pending_count || 0;
-                updateSaveBtn();
+                // immediate save — no pending state
                 loadStats();
 
                 // Stop the highlight interval so it doesn't fight with the cell update
@@ -1812,9 +1863,8 @@ function doReplaceAll() {
             if (data.replaced === 0) {
                 $('#srMatchInfo').text('No matches to replace.');
             } else {
-                showToast('Replaced ' + data.replaced + ' occurrence' + (data.replaced !== 1 ? 's' : '') + ' in ' + data.rows + ' row' + (data.rows !== 1 ? 's' : '') + ' (unsaved)', 'success');
-                pendingCount = data.pending_count || 0;
-                updateSaveBtn();
+                showToast('Replaced ' + data.replaced + ' occurrence' + (data.replaced !== 1 ? 's' : '') + ' in ' + data.rows + ' row' + (data.rows !== 1 ? 's' : ''), 'success');
+                // immediate save — no pending state
                 refreshGridData();
                 loadStats();
                 srMatches = []; srMatchIdx = -1;
