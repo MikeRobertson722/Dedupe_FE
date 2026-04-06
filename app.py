@@ -23,7 +23,7 @@ from data_loader import (
     get_bucket_counts, query_snowflake_page,
     save_record_immediately, save_records_batch,
     DataSource, BucketCache, BUCKET_CACHE_MAX_ROWS,
-    _FIELD_TO_DB_COL,
+    _FIELD_TO_DB_COL,  # noqa: F401 — used in Task 8 search_replace endpoint
 )
 
 app = Flask(__name__)
