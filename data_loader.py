@@ -842,8 +842,7 @@ def stage_approved_records(config: Dict[str, Any], df=None) -> int:
         cursor_check.close()
         if not rows:
             return 0
-        import pandas as _pd
-        eligible = _pd.DataFrame(rows, columns=['source_id', 'source_ssn'])
+        eligible = pd.DataFrame(rows, columns=['source_id', 'source_ssn'])
     else:
         # Identify eligible rows from the DataFrame
         mask = (

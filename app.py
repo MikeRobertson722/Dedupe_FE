@@ -382,37 +382,38 @@ def get_stats():
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
         table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
+        try:
+            cursor.execute(f"""
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN SSN_MATCH = 100 THEN 1 ELSE 0 END) AS ssn_perfect,
+                    SUM(CASE WHEN SSN_MATCH > 0 AND SSN_MATCH < 100 THEN 1 ELSE 0 END) AS ssn_partial,
+                    SUM(CASE WHEN SSN_MATCH = 0 THEN 1 ELSE 0 END) AS ssn_none,
+                    AVG(NAME_SCORE) AS avg_name,
+                    AVG(ADDRESS_SCORE) AS avg_addr
+                FROM {table}
+            """)
+            row = cursor.fetchone()
+            total, ssn_perfect, ssn_partial, ssn_none, avg_name, avg_addr = row
 
-        cursor.execute(f"""
-            SELECT
-                COUNT(*) AS total,
-                SUM(CASE WHEN SSN_MATCH = 100 THEN 1 ELSE 0 END) AS ssn_perfect,
-                SUM(CASE WHEN SSN_MATCH > 0 AND SSN_MATCH < 100 THEN 1 ELSE 0 END) AS ssn_partial,
-                SUM(CASE WHEN SSN_MATCH = 0 THEN 1 ELSE 0 END) AS ssn_none,
-                AVG(NAME_SCORE) AS avg_name,
-                AVG(ADDRESS_SCORE) AS avg_addr
-            FROM {table}
-        """)
-        row = cursor.fetchone()
-        total, ssn_perfect, ssn_partial, ssn_none, avg_name, avg_addr = row
+            cursor.execute(
+                f"SELECT RECOMMENDATION, COUNT(*) FROM {table} GROUP BY RECOMMENDATION"
+            )
+            rec_counts = {r[0]: r[1] for r in cursor.fetchall() if r[0]}
 
-        cursor.execute(
-            f"SELECT RECOMMENDATION, COUNT(*) FROM {table} GROUP BY RECOMMENDATION"
-        )
-        rec_counts = {r[0]: r[1] for r in cursor.fetchall() if r[0]}
-
-        stats = {
-            'total_records': int(total or 0),
-            'recommendations': rec_counts,
-            'avg_name_score': round(float(avg_name or 0), 1),
-            'avg_address_score': round(float(avg_addr or 0), 1),
-            'ssn_perfect_matches': int(ssn_perfect or 0),
-            'ssn_partial_matches': int(ssn_partial or 0),
-            'ssn_no_match': int(ssn_none or 0),
-            'rec_config': _load_ba_config(),
-        }
-        cursor.close()
-        return jsonify(stats)
+            stats = {
+                'total_records': int(total or 0),
+                'recommendations': rec_counts,
+                'avg_name_score': round(float(avg_name or 0), 1),
+                'avg_address_score': round(float(avg_addr or 0), 1),
+                'ssn_perfect_matches': int(ssn_perfect or 0),
+                'ssn_partial_matches': int(ssn_partial or 0),
+                'ssn_no_match': int(ssn_none or 0),
+                'rec_config': _load_ba_config(),
+            }
+            return jsonify(stats)
+        finally:
+            cursor.close()
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -489,9 +490,11 @@ def update_record():
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
         table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
-        cursor.execute(f'SELECT RECOMMENDATION FROM {table} WHERE ID = %s', (record_id,))
-        row = cursor.fetchone()
-        cursor.close()
+        try:
+            cursor.execute(f'SELECT RECOMMENDATION FROM {table} WHERE ID = %s', (record_id,))
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
         if row and str(row[0] or '').upper() == 'STAGED':
             return jsonify({'error': 'Cannot modify a STAGED record'}), 403
 
@@ -563,13 +566,15 @@ def bulk_update():
             conn = get_snowflake_connection(DATA_CONFIG)
             cursor = conn.cursor()
             placeholders = ', '.join(['%s'] * len(ids_to_check))
-            cursor.execute(
-                f"SELECT ID FROM {table} WHERE ID IN ({placeholders}) "
-                f"AND UPPER(RECOMMENDATION) = 'STAGED'",
-                ids_to_check,
-            )
-            staged_ids = {row[0] for row in cursor.fetchall()}
-            cursor.close()
+            try:
+                cursor.execute(
+                    f"SELECT ID FROM {table} WHERE ID IN ({placeholders}) "
+                    f"AND UPPER(RECOMMENDATION) = 'STAGED'",
+                    ids_to_check,
+                )
+                staged_ids = {row[0] for row in cursor.fetchall()}
+            finally:
+                cursor.close()
             batch = [b for b in batch if b['record_id'] not in staged_ids]
 
         if not batch:
@@ -636,13 +641,15 @@ def bulk_field_update():
             cursor = conn.cursor()
             table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
             placeholders = ', '.join(['%s'] * len(ids_to_check))
-            cursor.execute(
-                f"SELECT ID FROM {table} WHERE ID IN ({placeholders}) "
-                f"AND UPPER(RECOMMENDATION) = 'STAGED'",
-                ids_to_check,
-            )
-            staged_ids = {row[0] for row in cursor.fetchall()}
-            cursor.close()
+            try:
+                cursor.execute(
+                    f"SELECT ID FROM {table} WHERE ID IN ({placeholders}) "
+                    f"AND UPPER(RECOMMENDATION) = 'STAGED'",
+                    ids_to_check,
+                )
+                staged_ids = {row[0] for row in cursor.fetchall()}
+            finally:
+                cursor.close()
             batch = [b for b in batch if b['record_id'] not in staged_ids]
 
         if not batch:
@@ -916,13 +923,15 @@ def import_ids():
         placeholders = ', '.join(['%s'] * len(source_ids_str))
 
         # Find matching records not already set to 1
-        cursor.execute(
-            f"SELECT ID, SOURCE_ID, SOURCE_SSN FROM {table} "
-            f"WHERE SOURCE_ID IN ({placeholders}) AND {db_col} != 1",
-            source_ids_str,
-        )
-        rows_to_update = cursor.fetchall()
-        cursor.close()
+        try:
+            cursor.execute(
+                f"SELECT ID, SOURCE_ID, SOURCE_SSN FROM {table} "
+                f"WHERE SOURCE_ID IN ({placeholders}) AND {db_col} != 1",
+                source_ids_str,
+            )
+            rows_to_update = cursor.fetchall()
+        finally:
+            cursor.close()
 
         if not rows_to_update:
             return jsonify({'success': True, 'updated': 0,
@@ -972,14 +981,16 @@ def staging_count():
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
         table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
-        cursor.execute(
-            f"SELECT COUNT(*) FROM {table} "
-            f"WHERE UPPER(RECOMMENDATION) = 'APPROVED' "
-            f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != ''"
-        )
-        count = int(cursor.fetchone()[0])
-        cursor.close()
-        return jsonify({'count': count})
+        try:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM {table} "
+                f"WHERE UPPER(RECOMMENDATION) = 'APPROVED' "
+                f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != ''"
+            )
+            count = int(cursor.fetchone()[0])
+            return jsonify({'count': count})
+        finally:
+            cursor.close()
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1018,14 +1029,16 @@ def reload_data():
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
         table = DATA_CONFIG.get('table', 'import_merge_matches').upper()
-        cursor.execute(f'SELECT COUNT(*) FROM {table}')
-        total = int(cursor.fetchone()[0])
-        cursor.close()
-        return jsonify({
-            'success': True,
-            'records': total,
-            'message': f'Cache cleared. {total:,} total records in Snowflake.',
-        })
+        try:
+            cursor.execute(f'SELECT COUNT(*) FROM {table}')
+            total = int(cursor.fetchone()[0])
+            return jsonify({
+                'success': True,
+                'records': total,
+                'message': f'Cache cleared. {total:,} total records in Snowflake.',
+            })
+        finally:
+            cursor.close()
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
