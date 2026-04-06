@@ -1043,6 +1043,54 @@ def reload_data():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/bucket-counts')
+def bucket_counts():
+    """Return record count per recommendation bucket."""
+    try:
+        counts = get_bucket_counts(DATA_CONFIG)
+        return jsonify(counts)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/cache-status')
+def cache_status():
+    """Return current cache state for the mode badge."""
+    import datetime
+    with _bucket_cache_lock:
+        if _bucket_cache is None:
+            return jsonify({'mode': 'sql', 'bucket': None, 'row_count': 0,
+                            'load_time': None, 'fresh': False})
+        return jsonify({
+            'mode': 'cached',
+            'bucket': _bucket_cache.bucket,
+            'row_count': _bucket_cache.row_count,
+            'load_time': _bucket_cache.load_time.isoformat(),
+            'fresh': _bucket_cache.is_fresh(CACHE_TTL_SECONDS),
+        })
+
+
+@app.route('/api/user-info')
+def user_info():
+    """Return the current user's identity from cookies."""
+    user_id, user_name = _get_user_identity()
+    return jsonify({
+        'user_id': user_id,
+        'user_name': user_name or '',
+        'is_new': user_id is None,
+    })
+
+
+@app.route('/api/set-username', methods=['POST'])
+def set_username():
+    """Acknowledge a username change (client sets cookie itself)."""
+    data = request.json or {}
+    name = str(data.get('user_name', '')).strip()[:50]
+    if not name:
+        return jsonify({'error': 'Name cannot be empty'}), 400
+    return jsonify({'success': True, 'user_name': name})
+
+
 @app.route('/api/update_log')
 def get_update_log():
     """View recent update history from Snowflake"""
