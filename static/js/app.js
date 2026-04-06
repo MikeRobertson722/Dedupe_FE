@@ -723,10 +723,14 @@ $(document).ready(function() {
         }
     }
 
+    $('#dismissIdentityBanner').on('click', function() {
+        $('#identityBanner').addClass('d-none');
+    });
+
     $('#setNameLink').on('click', function(e) {
         e.preventDefault();
         $('#usernameInput').val(getCookie('user_name') || '');
-        new bootstrap.Modal(document.getElementById('usernameModal')).show();
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('usernameModal')).show();
     });
 
     $('#saveUsernameBtn').on('click', function() {

@@ -12,10 +12,10 @@
 </head>
 <body class="d-flex flex-column vh-100 overflow-hidden">
     <!-- User identity banner — hidden after name is set -->
-    <div id="identityBanner" class="alert alert-info alert-dismissible mb-0 py-2 px-3 rounded-0 d-none" role="alert">
+    <div id="identityBanner" class="alert alert-info mb-0 py-2 px-3 rounded-0 d-none" role="alert">
       You're reviewing as <strong id="identityDisplayName">Guest</strong>.
       <a href="#" id="setNameLink" class="alert-link ms-2">Set your name</a>
-      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+      <button type="button" class="btn-close ms-2" id="dismissIdentityBanner" aria-label="Close"></button>
     </div>
     <nav class="navbar navbar-dark bg-dark flex-shrink-0">
         <div class="container-fluid">
