@@ -636,7 +636,12 @@ def save_records_batch(
                 ))
 
     if all_log_entries:
-        write_audit_log_to_snowflake(config, all_log_entries, cursor=cursor)
+        cursor.executemany(
+            "INSERT INTO UPDATE_LOG "
+            "(SOURCE_ID, SOURCE_SSN, FIELD_NAME, OLD_VALUE, NEW_VALUE, UPDATED_AT, USER_ID, USER_NAME) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            all_log_entries,
+        )
     conn.commit()
     return total_affected
 
