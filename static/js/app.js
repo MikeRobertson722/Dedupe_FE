@@ -7,6 +7,7 @@ let recConfig = {};
 let selectedRowDataMap = new Map(); // rowId -> row data, for bulk operations
 let lastRecordsTotal = 0;
 let lastRecordsFiltered = 0;
+let _removedRowIds = new Set();  // rows hidden client-side (approved/moved) until next datasource reset
 let currentFilters = {
     recommendation: '',
     ssn_match: '',
@@ -215,18 +216,24 @@ function onExternalFilterChanged() {
 }
 
 function updateGridInfo() {
-    var shown = lastRecordsFiltered || 0;
+    var filtered = lastRecordsFiltered || 0;
     var total = lastRecordsTotal || 0;
-    $('#gridInfo').text('Showing ' + shown.toLocaleString() + ' of ' + total.toLocaleString() + ' records');
+    if (filtered === total) {
+        $('#gridInfo').text(total.toLocaleString() + ' records');
+    } else {
+        $('#gridInfo').text(filtered.toLocaleString() + ' of ' + total.toLocaleString() + ' records');
+    }
 }
 
 // ── Cell renderers ──
 function ssnCellRenderer(params) {
+    if (!params.data) return '';
     if (params.value === 100) return '<span class="badge bg-success" style="font-size:0.6rem;line-height:16px;padding:0 4px;">Yes</span>';
     return '<span class="badge bg-danger" style="font-size:0.6rem;line-height:16px;padding:0 4px;">No</span>';
 }
 
 function scoreCellRenderer(params) {
+    if (!params.data) return '';
     var val = params.value;
     if (val === '' || val === null || val === undefined) return '<span class="badge bg-secondary" style="font-size:0.6rem;line-height:16px;padding:0 4px;">-</span>';
     var cls = 'score-low';
@@ -263,6 +270,7 @@ function prefillProcessField(rows) {
 }
 
 function processCellRenderer(params) {
+    if (!params.data) return '';
     var val = params.value || '';
     var disabled = isStaged(params) ? ' disabled' : '';
     var html = '<select class="process-select" data-row-id="' + params.data._row_id + '" style="width:100%;border:none;background:transparent;font-size:0.75rem;cursor:pointer;padding:0 2px;"' + disabled + '>';
@@ -276,17 +284,20 @@ function processCellRenderer(params) {
 }
 
 function checkboxCellRenderer(params) {
+    if (!params.data) return '';
     var checked = params.value ? 'checked' : '';
     var disabled = isStaged(params) ? ' disabled' : '';
     return '<input type="checkbox" class="field-check" data-row-id="' + params.data._row_id + '" data-field="' + params.colDef.field + '" ' + checked + disabled + '>';
 }
 
 function addressLookupCellRenderer(params) {
+    if (!params.data) return '';
     var checked = (params.value === 1 || params.value === '1') ? 'checked' : '';
     return '<input type="checkbox" ' + checked + ' disabled>';
 }
 
 function memoCellRenderer(params) {
+    if (!params.data) return '';
     var val = params.value || '';
     var escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     if (isStaged(params)) {
@@ -298,22 +309,26 @@ function memoCellRenderer(params) {
 
 function sourceIdValueGetter(params) {
     var d = params.data;
+    if (!d) return '';
     var seq = d.source_addrseq || '';
     return seq ? (d.source_id || '') + '-' + seq : (d.source_id || '');
 }
 
 function sourceCszValueGetter(params) {
     var d = params.data;
+    if (!d) return '';
     return (d.source_city || '') + ', ' + (d.source_state || '') + ' ' + (d.source_zip || '');
 }
 
 function decCszValueGetter(params) {
     var d = params.data;
+    if (!d) return '';
     return (d.dec_city || '') + ', ' + (d.dec_state || '') + ' ' + (d.dec_zip || '');
 }
 
 function decCodeValueGetter(params) {
     var d = params.data;
+    if (!d) return '';
     var code = d.dec_hdrcode || '';
     var sub = d.dec_addrsubcode || '';
     return sub ? code + '-' + sub : code;
@@ -521,9 +536,9 @@ function initGrid(savedColState, savedFilterState) {
         rowModelType: 'infinite',
         // rowData removed — infinite row model uses datasource
         cacheBlockSize: 100,
-        maxBlocksInCache: 10,
-        infiniteInitialRowCount: 100,
-        getRowId: function(params) { return String(params.data._row_id); },
+        maxBlocksInCache: 1000,
+        infiniteInitialRowCount: 1,
+        getRowId: function(params) { return params.data ? String(params.data._row_id) : null; },
         stopEditingWhenCellsLoseFocus: true,
         defaultColDef: {
             sortable: true,
@@ -552,6 +567,7 @@ function initGrid(savedColState, savedFilterState) {
         tooltipShowDelay: 300,
         rowClassRules: {
             'trust-highlight': function(params) {
+                if (!params.data) return false;
                 var v = params.data.is_trust;
                 return v === 1 || v === true || v === '1' || v === 'true' || v === 'True';
             }
@@ -585,7 +601,6 @@ function initGrid(savedColState, savedFilterState) {
             applyColumnState(savedColState);
             syncColVisDropdown();
             loadGridData(savedFilterState);
-            gridApi.setGridOption('datasource', buildDatasource());
         },
         onColumnResized: function(params) {
             if (!params.finished) return;
@@ -631,9 +646,13 @@ function loadGridData(savedFilterState) {
     if (savedFilterState) {
         applyFilterState(savedFilterState);
     }
-    if (typeof gridApi !== 'undefined' && gridApi) {
-        gridApi.setGridOption('datasource', buildDatasource());
-    }
+    // Defer datasource set to avoid triggering a re-render while onGridReady
+    // is still on the call stack (causes "cannot draw rows while drawing rows").
+    setTimeout(function() {
+        if (typeof gridApi !== 'undefined' && gridApi) {
+            gridApi.setGridOption('datasource', buildDatasource());
+        }
+    }, 0);
 }
 
 function refreshGridData(onDone) {
@@ -660,17 +679,18 @@ function refreshCacheStatus() {
     $.get('/api/cache-status', function(status) {
         var badge = $('#cacheModeBadge');
         if (status.mode === 'cached') {
-            badge.text('Cached').removeClass('bg-secondary').addClass('bg-info text-dark').show();
+            badge.text('Cached').attr('title', 'Data is served from an in-memory cache for faster filtering and scrolling').removeClass('bg-secondary').addClass('bg-info text-dark').show();
         } else {
-            badge.text('Live query').removeClass('bg-info text-dark').addClass('bg-secondary').show();
+            badge.text('Live query').attr('title', 'Each request queries the database directly — used for multi-bucket views or search').removeClass('bg-info text-dark').addClass('bg-secondary').show();
         }
     }).fail(function() {
-        $('#cacheModeBadge').text('Unknown').removeClass('bg-info text-dark bg-secondary').addClass('bg-danger').show();
+        $('#cacheModeBadge').text('Unknown').attr('title', 'Unable to determine data source mode').removeClass('bg-info text-dark bg-secondary').addClass('bg-danger').show();
     });
 }
 
 // ── Infinite Row Model datasource ──
 function buildDatasource() {
+    _removedRowIds = new Set();  // clear client-side removals on datasource reset
     return {
         getRows: function(params) {
             var sortCol = null, sortDir = 'asc';
@@ -701,8 +721,13 @@ function buildDatasource() {
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     var rows = prefillProcessField(data.data || []);
+                    // Filter out rows that were removed client-side (e.g. approved)
+                    if (_removedRowIds.size > 0) {
+                        rows = rows.filter(function(r) { return !_removedRowIds.has(r._row_id); });
+                    }
                     lastRecordsTotal = data.recordsTotal || 0;
-                    lastRecordsFiltered = data.recordsFiltered || 0;
+                    lastRecordsFiltered = (data.recordsFiltered || 0) - _removedRowIds.size;
+                    if (lastRecordsFiltered < 0) lastRecordsFiltered = 0;
                     var rowCount = lastRecordsFiltered <= params.endRow ? lastRecordsFiltered : -1;
                     params.successCallback(rows, rowCount);
                     updateGridInfo();
@@ -710,9 +735,9 @@ function buildDatasource() {
                     if (data.cache_mode) {
                         var badge = $('#cacheModeBadge');
                         if (data.cache_mode === 'cached') {
-                            badge.text('Cached').removeClass('bg-secondary').addClass('bg-info text-dark').show();
+                            badge.text('Cached').attr('title', 'Data is served from an in-memory cache for faster filtering and scrolling').removeClass('bg-secondary').addClass('bg-info text-dark').show();
                         } else {
-                            badge.text('Live query').removeClass('bg-info text-dark').addClass('bg-secondary').show();
+                            badge.text('Live query').attr('title', 'Each request queries the database directly — used for multi-bucket views or search').removeClass('bg-info text-dark').addClass('bg-secondary').show();
                         }
                     }
                 })
@@ -1278,10 +1303,11 @@ function loadStats() {
             html += '<div class="col">' +
                 '<div class="card rec-card" style="border-left: 4px solid ' + color + '; cursor:pointer;" onclick="filterByRec(\'' + rec + '\')" title="' + tip + '">' +
                 '<div class="card-body py-1 px-2" style="line-height:1.4;">' +
-                '<div class="fw-bold text-truncate" style="font-size:0.82rem;">' + rec + ' - ' + count.toLocaleString() + ' <span class="text-muted fw-normal">(' + pct + '%)</span> <span class="badge bg-secondary bucket-count" data-bucket="' + rec + '" style="font-size:0.65rem;"></span></div>' +
+                '<div class="fw-bold text-truncate" style="font-size:0.82rem;">' + rec + ' - ' + count.toLocaleString() + ' <span class="text-muted fw-normal">(' + pct + '%)</span></div>' +
                 '</div></div></div>';
         });
         $('#recBreakdown').html(html);
+        refreshBucketCounts();
     });
 }
 
@@ -1506,8 +1532,13 @@ function quickApprove(rowId) {
     showConfirm('Approve Record', '<i class="fas fa-check-circle text-success fa-2x mb-2"></i><br>Approve this record?', function() {
         var rowNode = gridApi.getRowNode(String(rowId));
         var oldVal = rowNode ? (rowNode.data.recommendation || '') : '';
-        var approveData = rowNode ? rowNode.data : {};
+        var approveData = rowNode ? Object.assign({}, rowNode.data) : {};
         pushUndo({ type: 'single', changes: [{ rowId: rowId, field: 'recommendation', oldValue: oldVal, newValue: 'APPROVED' }] });
+        // Hide row immediately — no grid refresh needed
+        _removedRowIds.add(rowId);
+        gridApi.purgeInfiniteCache();
+        updateGridInfo();
+        showToast('Approved', 'success');
         $.ajax({
             url: '/api/update', method: 'POST', contentType: 'application/json',
             data: JSON.stringify({
@@ -1520,12 +1551,15 @@ function quickApprove(rowId) {
                 old_value: oldVal,
             }),
             success: function(data) {
-                showToast('Approved', 'success');
-                // immediate save — no pending state
-                if (rowNode) rowNode.setDataValue('recommendation', 'APPROVED');
+                refreshBucketCounts();
                 loadStats();
             },
-            error: function(xhr) { showToast('Save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
+            error: function(xhr) {
+                // Restore row on failure
+                _removedRowIds.delete(rowId);
+                gridApi.purgeInfiniteCache();
+                showToast('Save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger');
+            }
         });
     });
 }
@@ -1559,22 +1593,30 @@ function bulkApprove() {
                 });
             }
         });
+        // Hide rows immediately — no grid refresh needed
+        var approvedIds = [];
+        selectedRows.forEach(function(rid) { approvedIds.push(rid); _removedRowIds.add(rid); });
+        gridApi.deselectAll();
+        selectedRows.clear();
+        selectedRowDataMap.clear();
+        updateSelectionInfo();
+        gridApi.purgeInfiniteCache();
+        updateGridInfo();
+        showToast('Approved ' + approvedIds.length + ' record' + (approvedIds.length !== 1 ? 's' : ''), 'success');
         $.ajax({
             url: '/api/bulk_update', method: 'POST', contentType: 'application/json',
             data: JSON.stringify({ records: bulkRecords, recommendation: 'APPROVED', process_values: processValues }),
             success: function(data) {
-                var approved = data.updated || 0;
-                // immediate save — no pending state
-                gridApi.deselectAll();
-                selectedRows.clear();
-                selectedRowDataMap.clear();
-                updateSelectionInfo();
-                refreshGridData();
+                refreshBucketCounts();
                 loadStats();
                 loadStagingCount();
-                showToast('Approved ' + approved + ' record' + (approved !== 1 ? 's' : ''), 'success');
             },
-            error: function(xhr) { showToast('Bulk approve failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
+            error: function(xhr) {
+                // Restore rows on failure
+                approvedIds.forEach(function(rid) { _removedRowIds.delete(rid); });
+                gridApi.purgeInfiniteCache();
+                showToast('Bulk approve failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger');
+            }
         });
     });
 }

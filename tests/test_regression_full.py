@@ -58,11 +58,22 @@ def wait_modal_hide(page: Page, sel: str, timeout: int = 6000):
 
 
 def get_grid_counts(page: Page):
-    """Return (displayed, total) from the grid info bar."""
+    """Return (displayed, total) from the grid info bar.
+
+    Parses two formats produced by updateGridInfo():
+      - Filtered:   'X of Y records'  → (X, Y)
+      - Unfiltered: 'Y records'        → (Y, Y)
+    """
     info = page.text_content(GRID_INFO) or ""
-    m = re.search(r'Showing ([\d,]+) of ([\d,]+)', info)
+    # Filtered: "X of Y records"
+    m = re.search(r'([\d,]+) of ([\d,]+) records', info)
     if m:
         return int(m.group(1).replace(',', '')), int(m.group(2).replace(',', ''))
+    # Unfiltered: "Y records" (displayed == total)
+    m = re.search(r'([\d,]+) records', info)
+    if m:
+        n = int(m.group(1).replace(',', ''))
+        return n, n
     return 0, 0
 
 
@@ -95,16 +106,32 @@ def load_fresh(page: Page):
     page.goto(BASE_URL)
     wait_grid(page)
     page.wait_for_selector("#recBreakdown .col", timeout=15000)
+    # Wait for the first /api/matches response to populate #gridInfo
+    page.wait_for_function(
+        "() => { var t = document.querySelector('#gridInfo'); return t && /\\d/.test(t.innerText) && t.innerText !== '0 records'; }",
+        timeout=10000,
+    )
 
 
 def click_rec_card(page: Page, label: str):
-    """Click the rec breakdown card whose text contains label."""
+    """Click the rec breakdown card whose text contains label, then wait for
+    the grid's successCallback to fire and update #gridInfo."""
     cards = page.locator(f"{REC_CARD} .rec-card")
     for i in range(cards.count()):
         text = cards.nth(i).text_content() or ""
         if label.upper() in text.upper():
+            # Capture current gridInfo before clicking so we can wait for a change
+            before = page.text_content(GRID_INFO) or ""
             cards.nth(i).click()
-            page.wait_for_timeout(700)
+            # Wait for successCallback to update #gridInfo (text must change and be non-empty)
+            try:
+                page.wait_for_function(
+                    f"() => {{ var t = document.querySelector('{GRID_INFO}'); "
+                    f"return t && t.innerText && t.innerText !== {repr(before)}; }}",
+                    timeout=8000,
+                )
+            except Exception:
+                page.wait_for_timeout(1000)
             return True
     return False
 
@@ -962,7 +989,7 @@ class TestArea14_Refresh:
         page = page_fresh
         # Listen for the reload API call
         with page.expect_request("**/api/reload", timeout=5000) as req_info:
-            page.locator("button:has-text('Refresh')").click()
+            page.locator("#refreshBtn").click()
         req = req_info.value
         assert req.method == "POST", f"Refresh should POST to /api/reload, got {req.method}"
 
@@ -970,7 +997,7 @@ class TestArea14_Refresh:
         page = page_fresh
         _, total_before = get_grid_counts(page)
 
-        page.locator("button:has-text('Refresh')").click()
+        page.locator("#refreshBtn").click()
         page.wait_for_timeout(3000)  # Wait for reload
         wait_grid(page)
 

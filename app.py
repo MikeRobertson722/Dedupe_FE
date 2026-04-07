@@ -254,6 +254,9 @@ def get_matches():
         draw = request.args.get('draw', type=int, default=1)
         start = request.args.get('start', type=int, default=0)
         length = request.args.get('length', type=int, default=25)
+        # Cap page size to prevent loading entire dataset in one request
+        if length <= 0 or length > BUCKET_CACHE_MAX_ROWS:
+            length = BUCKET_CACHE_MAX_ROWS
 
         recommendation_filter = request.args.get('recommendation', default='')
         ssn_filter = request.args.get('ssn_match', default='')
@@ -292,7 +295,9 @@ def get_matches():
                 cache_mode = 'cached'
                 df = cache.df
 
-                records_total = len(df)
+                # Total = all rows across all buckets (true table count)
+                counts = get_bucket_counts(DATA_CONFIG)
+                records_total = sum(counts.values())
 
                 # Apply sub-filters in pandas
                 mask = pd.Series(True, index=df.index)
@@ -510,10 +515,14 @@ def update_record():
             user_id=user_id, user_name=user_name,
         )
 
-        # Update hot cache row in-place
-        with _bucket_cache_lock:
-            if _bucket_cache is not None:
-                _bucket_cache.update_row(row_id=record_id, field=field, value=value)
+        # If the recommendation changed, the row moved buckets — invalidate the cache.
+        # Otherwise just update the field in-place.
+        if field == 'recommendation':
+            _invalidate_cache()
+        else:
+            with _bucket_cache_lock:
+                if _bucket_cache is not None:
+                    _bucket_cache.update_row(row_id=record_id, field=field, value=value)
 
         return jsonify({'success': True, 'message': 'Saved'})
 
@@ -588,12 +597,8 @@ def bulk_update():
         user_id, user_name = _get_user_identity()
         affected = save_records_batch(DATA_CONFIG, batch, user_id=user_id, user_name=user_name)
 
-        # Update hot cache
-        with _bucket_cache_lock:
-            if _bucket_cache is not None:
-                for b in batch:
-                    for field_name, (_, new_val) in b['fields'].items():
-                        _bucket_cache.update_row(b['record_id'], field_name, new_val)
+        # Recommendation changed — rows moved buckets, invalidate cache
+        _invalidate_cache()
 
         return jsonify({'success': True, 'updated': len(batch)})
 
@@ -676,16 +681,16 @@ def bulk_field_update():
 
 @app.route('/api/matches_all')
 def get_matches_all():
-    """Return full dataset as JSON for AG Grid client-side processing"""
+    """Return full dataset as JSON for AG Grid client-side processing (capped at 100K rows)"""
     try:
-        # Use SQL pagination to fetch all records (legacy endpoint — prefer /api/matches)
+        # Use SQL pagination to fetch records (legacy endpoint — prefer /api/matches)
         rows, total_count, filtered_count = query_snowflake_page(
             config=DATA_CONFIG,
             filters={},
             sort_col=None,
             sort_dir='asc',
             start=0,
-            length=-1,
+            length=BUCKET_CACHE_MAX_ROWS,
         )
         if not rows:
             return Response('[]', mimetype='application/json')

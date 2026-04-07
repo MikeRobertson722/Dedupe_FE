@@ -483,7 +483,10 @@ def query_snowflake_page(
             direction = 'DESC' if sort_dir.lower() == 'desc' else 'ASC'
             order_sql = f'ORDER BY {sort_col.upper()} {direction}'
 
-        limit_sql = '' if length == -1 else f'LIMIT {int(length)} OFFSET {int(start)}'
+        if length == -1:
+            limit_sql = f'LIMIT {BUCKET_CACHE_MAX_ROWS} OFFSET {int(start)}'
+        else:
+            limit_sql = f'LIMIT {int(length)} OFFSET {int(start)}'
 
         cursor.execute(
             f'SELECT {col_list} FROM {table} {where_sql} {order_sql} {limit_sql}',

@@ -48,6 +48,11 @@ def app_page(page: Page, app_server) -> Page:
     page.goto(BASE_URL)
     page.wait_for_selector("#matchesGrid .ag-row", timeout=30000)
     page.wait_for_selector("#recBreakdown .col", timeout=15000)
+    # Wait for the first /api/matches response to populate #gridInfo
+    page.wait_for_function(
+        "() => { var t = document.querySelector('#gridInfo'); return t && /\\d/.test(t.innerText) && t.innerText !== '0 records'; }",
+        timeout=10000,
+    )
     return page
 
 

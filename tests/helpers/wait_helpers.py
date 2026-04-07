@@ -45,14 +45,22 @@ def wait_for_inline_save(page: Page, timeout: int = 3000):
 def get_grid_info_counts(page: Page):
     """Extract displayed and total record counts from grid info text.
 
-    Parses 'Showing 2,345 of 10,051 records'
+    Parses two formats produced by updateGridInfo():
+      - Filtered:   '411,468 of 431,695 records'  → (411468, 431695)
+      - Unfiltered: '431,695 records'              → (431695, 431695)
     Returns (displayed, total) tuple.
     """
     info_text = page.text_content("#gridInfo") or ""
-    match = re.search(r'Showing ([\d,]+) of ([\d,]+)', info_text)
+    # Filtered: "X of Y records"
+    match = re.search(r'([\d,]+) of ([\d,]+) records', info_text)
     if match:
         return (
             int(match.group(1).replace(',', '')),
             int(match.group(2).replace(',', ''))
         )
+    # Unfiltered: "Y records" (displayed == total)
+    match = re.search(r'([\d,]+) records', info_text)
+    if match:
+        n = int(match.group(1).replace(',', ''))
+        return (n, n)
     return (0, 0)
