@@ -440,7 +440,7 @@ function initGrid(savedColState, savedFilterState) {
         },
         { headerName: 'Src Addr', field: 'source_address', colId: 'source_address', minWidth: 200, flex: 2,
           headerClass: 'ag-header-source',
-          autoHeight: true,
+          wrapText: true,
           cellStyle: { 'white-space': 'pre-wrap', 'line-height': '1.3' },
           cellRenderer: function(params) {
               var val = params.value || '';
@@ -472,7 +472,7 @@ function initGrid(savedColState, savedFilterState) {
           headerClass: 'ag-header-source', editable: notStagedEditable },
         { headerName: 'Src Addr Recomend', field: 'source_address_recomend', colId: 'source_address_recomend', minWidth: 200, flex: 2,
           headerClass: 'ag-header-source', editable: notStagedEditable,
-          autoHeight: true,
+          wrapText: true,
           cellStyle: { 'white-space': 'pre-wrap', 'line-height': '1.3' },
           cellEditor: 'agLargeTextCellEditor',
           cellEditorParams: { maxLength: 500, rows: 5, cols: 50 },
@@ -534,7 +534,6 @@ function initGrid(savedColState, savedFilterState) {
     var gridOptions = {
         columnDefs: columnDefs,
         rowModelType: 'infinite',
-        // rowData removed — infinite row model uses datasource
         cacheBlockSize: 100,
         maxBlocksInCache: 1000,
         infiniteInitialRowCount: 1,
