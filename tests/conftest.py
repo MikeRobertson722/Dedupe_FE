@@ -11,7 +11,8 @@ APP_DIR = r"c:\ClaudeMain\BA_Review_App"
 
 @pytest.fixture(scope="session")
 def app_server():
-    """Start the Flask app if not already running. Session-scoped."""
+    """Start the Flask app if not already running. Session-scoped.
+    Leaves the server running after tests to avoid repeated SSO prompts."""
     try:
         r = requests.get(f"{BASE_URL}/api/stats", timeout=10)
         if r.status_code == 200:
@@ -38,8 +39,8 @@ def app_server():
         raise RuntimeError("Flask server did not start within 30 seconds")
 
     yield proc
-    proc.terminate()
-    proc.wait(timeout=10)
+    # Leave Flask running to preserve the Snowflake SSO session.
+    # The server will be reused by subsequent test runs.
 
 
 @pytest.fixture(scope="function")

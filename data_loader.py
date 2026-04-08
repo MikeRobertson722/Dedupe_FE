@@ -4,17 +4,20 @@ Supports loading data from Snowflake
 """
 import os
 import time
+import logging
 import threading
 import datetime
 import pandas as pd
 from typing import Dict, Any, Optional, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # Persistent Snowflake connection — avoids repeated SSO browser popups
 _sf_conn = None
 _sf_config_hash = None
 _sf_conn_verified_at = 0  # timestamp of last successful health check
-_SF_CONN_TTL = 60         # seconds to trust a connection without re-checking
+_SF_CONN_TTL = 600        # seconds to trust a connection without re-checking
 
 import re as _re
 _VALID_IDENTIFIER = _re.compile(r'^[A-Z0-9_]+$')
@@ -49,6 +52,7 @@ def _build_conn_params(config: Dict[str, Any]) -> dict:
     if authenticator:
         conn_params['authenticator'] = authenticator
         conn_params['client_store_temporary_credential'] = True
+        conn_params['client_session_keep_alive'] = True
     else:
         conn_params['password'] = os.environ.get('SNOWFLAKE_PASSWORD', config.get('password', ''))
 
@@ -84,22 +88,28 @@ def get_snowflake_connection(config: Dict[str, Any]):
 
     with _conn_lock:
         if _sf_conn is not None and _sf_config_hash == config_hash:
-            if (time.time() - _sf_conn_verified_at) < _SF_CONN_TTL:
+            age = time.time() - _sf_conn_verified_at
+            if age < _SF_CONN_TTL:
                 return _sf_conn
             try:
                 _sf_conn.cursor().execute("SELECT 1")
                 _sf_conn_verified_at = time.time()
+                logger.debug("Snowflake connection health check passed (age %.0fs)", age)
                 return _sf_conn
-            except Exception:
+            except Exception as e:
+                logger.warning("Snowflake connection health check failed (age %.0fs): %s", age, e)
                 try:
                     _sf_conn.close()
                 except Exception:
                     pass
                 _sf_conn = None
 
+        logger.info("Creating new Snowflake connection (authenticator=%s)",
+                     conn_params.get('authenticator', 'password'))
         _sf_conn = connector.connect(**conn_params)
         _sf_config_hash = config_hash
         _sf_conn_verified_at = time.time()
+        logger.info("Snowflake connection established successfully")
         return _sf_conn
 
 
