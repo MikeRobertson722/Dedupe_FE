@@ -664,11 +664,20 @@ function refreshGridData(onDone) {
 // ── Bucket count / cache status helpers ──
 function refreshBucketCounts() {
     $.get('/api/bucket-counts', function(counts) {
+        var total = 0;
+        Object.values(counts).forEach(function(c) { total += c; });
         $('.bucket-count').each(function() {
             var bucket = $(this).data('bucket');
             var count = counts[bucket];
-            $(this).text(count !== undefined ? count.toLocaleString() : '');
+            if (count !== undefined) {
+                $(this).text(count.toLocaleString());
+                var pctSpan = $(this).siblings('.text-muted');
+                if (pctSpan.length && total > 0) {
+                    pctSpan.text('(' + ((count / total) * 100).toFixed(1) + '%)');
+                }
+            }
         });
+        if (total > 0) $('#allRecordsCount').text(total.toLocaleString());
     }).fail(function() {
         $('.bucket-count').text('?');
     });
@@ -1284,7 +1293,7 @@ function loadStats() {
         html += '<div class="col">' +
             '<div class="card rec-card" style="border-left: 4px solid #212529; cursor:pointer;" onclick="clearFilters()">' +
             '<div class="card-body py-1 px-2" style="line-height:1.4;">' +
-            '<div class="fw-bold text-truncate" style="font-size:0.82rem;" title="All Records">ALL - ' + s.total_records.toLocaleString() + '</div>' +
+            '<div class="fw-bold text-truncate" style="font-size:0.82rem;" title="All Records">ALL - <span id="allRecordsCount">' + s.total_records.toLocaleString() + '</span></div>' +
             '</div></div></div>';
         recConfig = s.rec_config || {};
         var recCfg = recConfig;
@@ -1302,7 +1311,7 @@ function loadStats() {
             html += '<div class="col">' +
                 '<div class="card rec-card" style="border-left: 4px solid ' + color + '; cursor:pointer;" onclick="filterByRec(\'' + rec + '\')" title="' + tip + '">' +
                 '<div class="card-body py-1 px-2" style="line-height:1.4;">' +
-                '<div class="fw-bold text-truncate" style="font-size:0.82rem;">' + rec + ' - ' + count.toLocaleString() + ' <span class="text-muted fw-normal">(' + pct + '%)</span></div>' +
+                '<div class="fw-bold text-truncate" style="font-size:0.82rem;">' + rec + ' - <span class="bucket-count" data-bucket="' + rec + '">' + count.toLocaleString() + '</span> <span class="text-muted fw-normal">(' + pct + '%)</span></div>' +
                 '</div></div></div>';
         });
         $('#recBreakdown').html(html);
