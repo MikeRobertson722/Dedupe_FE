@@ -472,9 +472,13 @@ def query_snowflake_page(
             conditions.append(f'({like_clauses})')
             params.extend([f'%{search}%'] * len(text_cols))
 
-        # Exclude STAGED records when no recommendation filter is set (default behavior)
-        if filters.get('hide_staged') and not rec:
-            conditions.append("UPPER(RECOMMENDATION) != 'STAGED'")
+        # NOTE: previously we excluded STAGED rows when the user hadn't picked
+        # an explicit recommendation filter ("hide_staged" default). That was
+        # misleading — the dropdown said "All" but the result wasn't all, and
+        # when every row in the table happens to be STAGED (e.g. right after
+        # a big stage-approved batch) the grid went blank with no explanation.
+        # "All" now literally means all. Users who want to hide STAGED can
+        # check the non-STAGED recommendation values in the rec filter dropdown.
 
         where_sql = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
 

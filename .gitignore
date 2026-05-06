@@ -30,3 +30,4 @@ verify_replace_zoomed.py
 
 # Pyre type checker
 .pyre_configuration
+app_server.log
