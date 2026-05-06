@@ -472,6 +472,7 @@ function initGrid(savedColState, savedFilterState) {
           headerClass: 'ag-header-source', editable: notStagedEditable },
         { headerName: 'Src Addr Recomend', field: 'source_address_recomend', colId: 'source_address_recomend', minWidth: 200, flex: 2,
           headerClass: 'ag-header-source', editable: notStagedEditable,
+          autoHeight: true,
           wrapText: true,
           cellStyle: { 'white-space': 'pre-wrap', 'line-height': '1.3' },
           cellEditor: 'agLargeTextCellEditor',
@@ -623,6 +624,7 @@ function initGrid(savedColState, savedFilterState) {
         onPaginationChanged: function() {
             updateGridInfo();
         },
+        onBodyScrollEnd: function() { fixRowPositions(); },
         onSelectionChanged: function() {
             selectedRows.clear();
             selectedRowDataMap.clear();
@@ -696,6 +698,51 @@ function refreshCacheStatus() {
     });
 }
 
+// ── Row-position fix for autoHeight in IRM ──
+// autoHeight expands cells but IRM doesn't recompute translateY.
+// Fix only the rendered rows' positions; never touch container height.
+var _fixRowTimer = null;
+function fixRowPositions() {
+    clearTimeout(_fixRowTimer);
+    _fixRowTimer = setTimeout(function() {
+        var container = document.querySelector('.ag-center-cols-container');
+        if (!container) return;
+        var rows = container.querySelectorAll('.ag-row');
+        if (!rows.length) return;
+
+        var rowList = [];
+        var hasMultiLine = false;
+        rows.forEach(function(el) {
+            var idx = parseInt(el.getAttribute('row-index'), 10);
+            if (!isNaN(idx)) {
+                rowList.push({ el: el, idx: idx });
+                if (el.offsetHeight > 25) hasMultiLine = true;
+            }
+        });
+        // Only fix positions if there are multi-line rows to adjust
+        if (!hasMultiLine || !rowList.length) return;
+        rowList.sort(function(a, b) { return a.idx - b.idx; });
+
+        // Start from the first rendered row's current position
+        var m = (rowList[0].el.style.transform || '').match(/translateY\(([^)]+)px\)/);
+        var cumY = m ? parseFloat(m[1]) : 0;
+
+        for (var i = 0; i < rowList.length; i++) {
+            var el = rowList[i].el;
+            var h = el.offsetHeight;
+            el.style.transform = 'translateY(' + cumY + 'px)';
+            // Sync the matching pinned-left row (checkbox column)
+            var pinned = document.querySelector(
+                '.ag-pinned-left-cols-container .ag-row[row-index="' + rowList[i].idx + '"]');
+            if (pinned) {
+                pinned.style.height = h + 'px';
+                pinned.style.transform = 'translateY(' + cumY + 'px)';
+            }
+            cumY += h;
+        }
+    }, 100);
+}
+
 // ── Infinite Row Model datasource ──
 function buildDatasource() {
     _removedRowIds = new Set();  // clear client-side removals on datasource reset
@@ -738,6 +785,7 @@ function buildDatasource() {
                     if (lastRecordsFiltered < 0) lastRecordsFiltered = 0;
                     var rowCount = lastRecordsFiltered <= params.endRow ? lastRecordsFiltered : -1;
                     params.successCallback(rows, rowCount);
+                    fixRowPositions();
                     updateGridInfo();
                     // Update cache mode badge from response
                     if (data.cache_mode) {

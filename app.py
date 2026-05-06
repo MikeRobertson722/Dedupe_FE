@@ -32,6 +32,20 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.auto_reload = True
 
 
+def _is_dev_server():
+    """True only when serving via Flask's built-in (Werkzeug) dev server.
+    Gunicorn/Waitress/IIS set a different SERVER_SOFTWARE, so this is False
+    under any production WSGI host. Used to gate dev-only features like
+    /api/reload (which clears the in-process bucket cache)."""
+    return request.environ.get('SERVER_SOFTWARE', '').lower().startswith('werkzeug')
+
+
+@app.context_processor
+def inject_runtime_flags():
+    """Expose runtime flags to all templates."""
+    return {'is_dev_server': _is_dev_server()}
+
+
 @app.after_request
 def add_no_cache_headers(response):
     """Prevent browser from caching API responses"""
@@ -992,10 +1006,14 @@ def staging_count():
         cursor = conn.cursor()
         table = _safe_table(DATA_CONFIG.get('table', 'import_merge_matches'))
         try:
+            # 'Manual Review - DNP' is excluded — those rows are intentionally
+            # not staged, and the count must match what stage_approved_records
+            # actually writes.
             cursor.execute(
                 f"SELECT COUNT(*) FROM {table} "
                 f"WHERE UPPER(RECOMMENDATION) = 'APPROVED' "
-                f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != ''"
+                f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != '' "
+                f"AND HOW_TO_PROCESS <> 'Manual Review - DNP'"
             )
             count = int(cursor.fetchone()[0])
             return jsonify({'count': count})
@@ -1033,7 +1051,12 @@ def stage_approved():
 
 @app.route('/api/reload', methods=['POST'])
 def reload_data():
-    """Invalidate the bucket cache so the next request reloads from Snowflake."""
+    """Invalidate the bucket cache so the next request reloads from Snowflake.
+    Disabled outside the Flask dev server — under a production WSGI host the
+    in-process cache may be shared across threads in ways that make ad-hoc
+    invalidation unsafe, so the button is hidden and the endpoint refuses."""
+    if not _is_dev_server():
+        return jsonify({'error': 'Refresh is disabled in production.'}), 403
     try:
         _invalidate_cache()
         conn = get_snowflake_connection(DATA_CONFIG)

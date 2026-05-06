@@ -22,7 +22,8 @@
       "Bash(python3:*)",
       "Bash(powershell -command \"Get-Process chrome | Select-Object Id, MainWindowTitle\")",
       "Skill(update-config)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(git checkout:*)"
     ]
   },
   "enabledPlugins": {

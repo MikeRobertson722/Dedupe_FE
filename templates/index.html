@@ -26,7 +26,9 @@
                 <span class="text-light small">
                     <i class="fas fa-snowflake text-info"></i> Snowflake
                 </span>
-                <button class="btn btn-outline-light btn-sm" onclick="refreshData()">
+                <button class="btn btn-outline-light btn-sm"
+                        onclick="refreshData()"
+                        {% if not is_dev_server %}disabled title="Refresh is disabled in production"{% endif %}>
                     <i class="fas fa-sync-alt"></i> Refresh
                 </button>
                 <button class="btn btn-outline-info btn-sm" onclick="openDevNotes()" title="Open Dev Notes">
@@ -109,7 +111,10 @@
                 <span id="cacheLoadingBadge" class="badge bg-warning text-dark ms-2" style="display:none;">
                   <span class="spinner-border spinner-border-sm me-1" role="status"></span>Loading&hellip;
                 </span>
-                <button type="button" class="btn btn-outline-secondary btn-sm ms-1" id="refreshBtn" title="Refresh data from Snowflake" style="height:28px;padding:2px 6px;font-size:0.75rem;">
+                <button type="button" class="btn btn-outline-secondary btn-sm ms-1" id="refreshBtn"
+                        title="{% if is_dev_server %}Refresh data from Snowflake{% else %}Refresh is disabled in production{% endif %}"
+                        style="height:28px;padding:2px 6px;font-size:0.75rem;"
+                        {% if not is_dev_server %}disabled{% endif %}>
                   <i class="fas fa-sync-alt"></i> Refresh
                 </button>
             </div>

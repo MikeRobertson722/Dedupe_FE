@@ -840,10 +840,12 @@ def read_audit_log_from_snowflake(config: Dict[str, Any], limit: int = 100) -> l
 
 
 def count_staging_eligible(df: pd.DataFrame) -> int:
-    """Count records eligible for staging (APPROVED with a Process value set)."""
+    """Count records eligible for staging (APPROVED with a Process value set,
+    excluding 'Manual Review - DNP' which is intentionally not staged)."""
     mask = (
         (df['recommendation'].fillna('').str.upper() == 'APPROVED') &
-        (df['how_to_process'].fillna('').str.strip() != '')
+        (df['how_to_process'].fillna('').str.strip() != '') &
+        (df['how_to_process'] != 'Manual Review - DNP')
     )
     return int(mask.sum())
 
@@ -858,13 +860,16 @@ def stage_approved_records(config: Dict[str, Any], df=None) -> int:
     table = config.get('table', 'import_merge_matches').upper()
 
     if df is None:
-        # Load eligible records from Snowflake directly
+        # Load eligible records from Snowflake directly. 'Manual Review - DNP'
+        # rows are intentionally excluded — they're flagged for human review,
+        # not for automated downstream processing.
         conn = get_snowflake_connection(config)
         cursor_check = conn.cursor()
         cursor_check.execute(
             f"SELECT SOURCE_ID, SOURCE_SSN FROM {table} "
             f"WHERE UPPER(RECOMMENDATION) = 'APPROVED' "
-            f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != ''"
+            f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != '' "
+            f"AND HOW_TO_PROCESS <> 'Manual Review - DNP'"
         )
         rows = cursor_check.fetchall()
         cursor_check.close()
@@ -875,7 +880,8 @@ def stage_approved_records(config: Dict[str, Any], df=None) -> int:
         # Identify eligible rows from the DataFrame
         mask = (
             (df['recommendation'].str.upper() == 'APPROVED') &
-            (df['how_to_process'].fillna('').str.strip() != '')
+            (df['how_to_process'].fillna('').str.strip() != '') &
+            (df['how_to_process'] != 'Manual Review - DNP')
         )
         eligible = df[mask]
         if eligible.empty:
@@ -889,54 +895,94 @@ def stage_approved_records(config: Dict[str, Any], df=None) -> int:
     pair_placeholders = ', '.join(['(%s, %s)'] * len(pairs))
     pair_params = [v for pair in pairs for v in pair]
 
+    # 'Manual Review - DNP' is excluded from BOTH the INSERT into staging AND
+    # the UPDATE that flags rows STAGED — DNP rows stay visible/APPROVED so
+    # a human can revisit them.
     eligibility_where = (
         f"(SOURCE_ID, SOURCE_SSN) IN ({pair_placeholders}) "
         f"AND UPPER(RECOMMENDATION) = 'APPROVED' "
-        f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != ''"
+        f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != '' "
+        f"AND HOW_TO_PROCESS <> 'Manual Review - DNP'"
     )
 
     conn = get_snowflake_connection(config)
     cursor = conn.cursor()
 
     try:
-        # INSERT into STG_BA_MASTER with explicit column mapping
+        # Base column -> SELECT expression mapping for STG_BA_MASTER.
+        # For any base column whose `<base>_2` sibling exists in STG_BA_MASTER
+        # AND isn't already explicitly mapped here, the same expression is
+        # mirrored into the _2 column automatically (see auto-mirror loop below).
+        # SSN_2 is intentionally specified explicitly with its own digits-only
+        # transform, so the auto-mirror skips it.
+        column_specs = [
+            ('ADDRADDRESS',     "NULLIF(SOURCE_ADDRESS_RECOMEND, '')"),
+            ('ADDRCITY',        "NULLIF(SOURCE_CITY, '')"),
+            ('ADDRCONTACT',     "NULLIF(SOURCE_NAME, '')"),
+            ('ADDRCOUNTRY',     "'US'"),
+            ('ADDRSEQ',         "NULLIF(DEC_ADDRSUBCODE, '')"),
+            ('ADDRSEQ_SOURCE',  "NULLIF(SOURCE_ADDRSEQ, '')"),
+            ('ADDRSTATE',       "NULLIF(SOURCE_STATE, '')"),
+            # ADDRUNKNOWN is a VARCHAR(1) flag in staging: '1' when the source
+            # VALID_ADDRESS is FALSE, '0' otherwise (incl. NULL/TRUE).
+            # ADDRUNKNOWN_2 is auto-mirrored from this expression.
+            ('ADDRUNKNOWN',     "CASE WHEN VALID_ADDRESS = FALSE THEN '1' ELSE '0' END"),
+            ('ADDRZIPCODE',     "NULLIF(SOURCE_ZIP, '')"),
+            ('ECODE',           "CASE WHEN HOW_TO_PROCESS IN ('Merge BA and address',\n"
+                                "                                          'Add address to existing BA')\n"
+                                "                     THEN NULLIF(DEC_HDRCODE, '')\n"
+                                "                     ELSE NULL END"),
+            ('ID',              'DGO_MA.MA_STAGING.BA_MASTER_SQ.NEXTVAL'),
+            ('JIBOWNER',        'TRUE'),
+            ('LANDOWNER',       'TRUE'),
+            ('LEGACY_ID',       "NULLIF(SOURCE_ID, '')"),
+            ('LOAD_ME',         'TRUE'),
+            ('MATCH_BY_ADDRESS', "CASE WHEN HOW_TO_PROCESS = 'Merge BA and address'\n"
+                                 "                     THEN TRUE ELSE FALSE END"),
+            ('MATCH_BY_ENERTIA', "CASE WHEN HOW_TO_PROCESS IN ('Merge BA and address',\n"
+                                 "                                          'Add address to existing BA')\n"
+                                 "                     THEN TRUE ELSE FALSE END"),
+            ('REVOWNER',        'TRUE'),
+            ('SOURCESYSTEM',    "(SELECT CONFIG_VALUE FROM BA_CONFIG\n"
+                                "                 WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME')"),
+            ('SOURCETABLE',     "(SELECT CONFIG_VALUE FROM BA_CONFIG\n"
+                                "                 WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME')"),
+            ('SSN',             "NULLIF(SOURCE_SSN, '')"),
+            ('SSN_2',           "NULLIF(REGEXP_REPLACE(SOURCE_SSN, '[^A-Za-z0-9]', ''), '')"),
+            ('VALIDATION',      "'IMPORT_MERGE_MATCHES.ID = ' || CAST(ID AS VARCHAR)"),
+        ]
+
+        # Discover what columns actually exist in STG_BA_MASTER so we only
+        # reference _2 siblings that are real. Cheap: one DESCRIBE per stage op.
+        cursor.execute("DESCRIBE TABLE DGO_MA.MA_STAGING.STG_BA_MASTER")
+        all_staging_cols = {row[0].upper() for row in cursor.fetchall()}
+
+        # Auto-mirror: for each base column, if `<base>_2` exists in staging
+        # and isn't already explicitly mapped above, write the same value to it.
+        explicit_cols = {col for col, _ in column_specs}
+        expanded = []
+        auto_mirrored = []
+        for col, expr in column_specs:
+            expanded.append((col, expr))
+            sibling = col + '_2'
+            if sibling in all_staging_cols and sibling not in explicit_cols:
+                expanded.append((sibling, expr))
+                auto_mirrored.append(sibling)
+
+        if auto_mirrored:
+            print(f"  [STAGING] Auto-mirroring {len(auto_mirrored)} _2 column(s): "
+                  f"{', '.join(auto_mirrored)}")
+
+        cols_sql = ',\n                '.join(c for c, _ in expanded)
+        vals_sql = ',\n                '.join(e for _, e in expanded)
+
         cursor.execute(
             f"""
             INSERT INTO DGO_MA.MA_STAGING.STG_BA_MASTER (
-                ADDRADDRESS, ADDRCITY, ADDRCONTACT, ADDRCOUNTRY,
-                ADDRSEQ, ADDRSEQ_SOURCE, ADDRSTATE, ADDRZIPCODE,
-                ECODE, ID, JIBOWNER, LANDOWNER, LEGACY_ID, LOAD_ME,
-                MATCH_BY_ADDRESS, MATCH_BY_ENERTIA, REVOWNER,
-                SOURCESYSTEM, SOURCETABLE, SSN, SSN_2, VALIDATION
+                {cols_sql}
             )
             SELECT
-                NULLIF(SOURCE_ADDRESS_RECOMEND, ''),
-                NULLIF(SOURCE_CITY, ''),
-                NULLIF(SOURCE_NAME, ''),
-                'US',
-                NULLIF(DEC_ADDRSUBCODE, ''),
-                NULLIF(SOURCE_ADDRSEQ, ''),
-                NULLIF(SOURCE_STATE, ''),
-                NULLIF(SOURCE_ZIP, ''),
-                NULLIF(DEC_HDRCODE, ''),
-                DGO_MA.MA_STAGING.BA_MASTER_SQ.NEXTVAL,
-                TRUE,
-                TRUE,
-                NULLIF(SOURCE_ID, ''),
-                TRUE,
-                CASE WHEN HOW_TO_PROCESS = 'Merge BA and address'
-                     THEN TRUE ELSE FALSE END,
-                CASE WHEN HOW_TO_PROCESS IN ('Merge BA and address',
-                                             'Add address to existing BA')
-                     THEN TRUE ELSE FALSE END,
-                TRUE,
-                (SELECT CONFIG_VALUE FROM BA_CONFIG
-                 WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME'),
-                (SELECT CONFIG_VALUE FROM BA_CONFIG
-                 WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME'),
-                NULLIF(SOURCE_SSN, ''),
-                NULLIF(REGEXP_REPLACE(SOURCE_SSN, '[^A-Za-z0-9]', ''), ''),
-                'IMPORT_MERGE_MATCHES.ID = ' || CAST(ID AS VARCHAR)
+                {vals_sql}
             FROM {table}
             WHERE {eligibility_where}
             """,
