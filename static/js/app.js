@@ -27,6 +27,36 @@ var UNDO_MAX = 50;
 const DO_NOT_USE_RE = /do\s*n[o']?t\s*use|don['\u2019]t\s*use|d\.?n\.?u\.?(?!\w)/i;
 const BAD_ADDR_RE = /bad\s*addr(?:ess)?/i;
 
+// \u2500\u2500 Staging length limits (from /api/staging_limits) \u2500\u2500
+// Populated once at init from Snowflake's INFORMATION_SCHEMA on STG_BA_MASTER.
+// Drives the .oversize-cell highlight on editable source columns.
+//   Shape: { source_name: { max: 35, staging_columns: ['ADDRCONTACT', 'ADDRCONTACT_2'] }, ... }
+var STAGING_LIMITS = {};
+function loadStagingLimits() {
+    return $.get('/api/staging_limits').done(function(data) {
+        STAGING_LIMITS = (data && data.limits) || {};
+        if (typeof gridApi !== 'undefined' && gridApi && gridApi.refreshCells) {
+            gridApi.refreshCells({ force: true });
+        }
+    }).fail(function() {
+        // Non-fatal \u2014 without limits the highlight just doesn't fire.
+        console.warn('Could not load staging limits; oversize highlights disabled.');
+    });
+}
+function isOversize(field, value) {
+    var lim = STAGING_LIMITS[field];
+    if (!lim || !lim.max) return false;
+    if (value == null) return false;
+    return String(value).length > lim.max;
+}
+function oversizeTooltip(field, value) {
+    if (!isOversize(field, value)) return null;
+    var lim = STAGING_LIMITS[field];
+    var dest = (lim.staging_columns || []).join(', ');
+    return 'Staging ' + dest + ' \u2014 exceeds max length ' + lim.max +
+           ' (currently ' + String(value).length + ' characters).';
+}
+
 // Grid settings persistence
 var _colStateSaveTimer = null;
 var _suppressFilterSave = false;
@@ -436,7 +466,12 @@ function initGrid(savedColState, savedFilterState) {
         },
         { headerName: 'Src Name', field: 'source_name', colId: 'source_name', minWidth: 140, flex: 1,
           headerClass: 'ag-header-source', wrapText: false, editable: notStagedEditable,
-          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); }, 'bad-addr-cell': function(p) { return p.value && BAD_ADDR_RE.test(p.value); } }
+          cellClassRules: {
+              'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); },
+              'bad-addr-cell':   function(p) { return p.value && BAD_ADDR_RE.test(p.value); },
+              'oversize-cell':   function(p) { return isOversize('source_name', p.value); }
+          },
+          tooltipValueGetter: function(p) { return oversizeTooltip('source_name', p.value); }
         },
         { headerName: 'Src Addr', field: 'source_address', colId: 'source_address', minWidth: 200, flex: 2,
           headerClass: 'ag-header-source',
@@ -465,11 +500,17 @@ function initGrid(savedColState, savedFilterState) {
           cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); }, 'bad-addr-cell': function(p) { return p.value && BAD_ADDR_RE.test(p.value); } }
         },
         { headerName: 'Src City', field: 'source_city', colId: 'source_city', width: 100,
-          headerClass: 'ag-header-source', editable: notStagedEditable },
+          headerClass: 'ag-header-source', editable: notStagedEditable,
+          cellClassRules: { 'oversize-cell': function(p) { return isOversize('source_city', p.value); } },
+          tooltipValueGetter: function(p) { return oversizeTooltip('source_city', p.value); } },
         { headerName: 'Src St', field: 'source_state', colId: 'source_state', width: 50,
-          headerClass: 'ag-header-source', editable: notStagedEditable },
+          headerClass: 'ag-header-source', editable: notStagedEditable,
+          cellClassRules: { 'oversize-cell': function(p) { return isOversize('source_state', p.value); } },
+          tooltipValueGetter: function(p) { return oversizeTooltip('source_state', p.value); } },
         { headerName: 'Src Zip', field: 'source_zip', colId: 'source_zip', width: 70,
-          headerClass: 'ag-header-source', editable: notStagedEditable },
+          headerClass: 'ag-header-source', editable: notStagedEditable,
+          cellClassRules: { 'oversize-cell': function(p) { return isOversize('source_zip', p.value); } },
+          tooltipValueGetter: function(p) { return oversizeTooltip('source_zip', p.value); } },
         { headerName: 'Src Addr Recomend', field: 'source_address_recomend', colId: 'source_address_recomend', minWidth: 200, flex: 2,
           headerClass: 'ag-header-source', editable: notStagedEditable,
           autoHeight: true,
@@ -499,7 +540,12 @@ function initGrid(savedColState, savedFilterState) {
               }
               return container;
           },
-          cellClassRules: { 'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); }, 'bad-addr-cell': function(p) { return p.value && BAD_ADDR_RE.test(p.value); } }
+          cellClassRules: {
+              'do-not-use-cell': function(p) { return p.value && DO_NOT_USE_RE.test(p.value); },
+              'bad-addr-cell':   function(p) { return p.value && BAD_ADDR_RE.test(p.value); },
+              'oversize-cell':   function(p) { return isOversize('source_address_recomend', p.value); }
+          },
+          tooltipValueGetter: function(p) { return oversizeTooltip('source_address_recomend', p.value); }
         },
         { headerName: 'Src SSN', field: 'source_ssn', colId: 'source_ssn', width: 100,
           headerClass: 'ag-header-source' },
@@ -591,9 +637,15 @@ function initGrid(savedColState, savedFilterState) {
                             value: params.newValue || '',
                             old_value: params.oldValue || '',
                         }),
-                        success: function(data) { showToast('Saved', 'success'); refreshBucketCounts(); },
+                        success: function(data) { showToast('Saved', 'success'); refreshBucketCounts(); loadStagingCount(); },
                         error: function(xhr) { showToast('Save failed: ' + ((xhr.responseJSON || {}).error || 'Unknown'), 'danger'); }
                     });
+                    // Force the oversize-cell rule to re-evaluate on click-away. AG Grid
+                    // usually re-renders after a value change, but force:true makes it
+                    // explicit under IRM where the row's block may not naturally redraw.
+                    if (gridApi && params.node) {
+                        gridApi.refreshCells({ rowNodes: [params.node], columns: [params.column.getId()], force: true });
+                    }
                 }
             }
         },
@@ -915,6 +967,10 @@ $(document).ready(function() {
         initGrid(settings.column_state, settings.filter_state);
         loadStats();
         loadStagingCount();
+        // Fetch the per-source-field char limits from STG_BA_MASTER. The grid
+        // uses these in its cellClassRules to highlight oversize values in
+        // light red. Loaded after initGrid so refreshCells has a real api.
+        loadStagingLimits();
     });
 
     // Filter dropdowns trigger server-side filter refresh
@@ -1719,33 +1775,93 @@ function updateStagingBtn() {
     btn.find('.stage-count').text(stagingCount > 0 ? ' (' + stagingCount + ')' : '');
 }
 
+// HTML-escape user data destined for innerHTML injection in the overflow modal.
+function _escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function stageApproved() {
     if (stagingCount === 0) {
         showToast('No eligible records to stage', 'info');
         return;
     }
+    // Pre-flight: ask the server which rows would overflow. If any do, show the
+    // rejection modal so the user can see exactly which rows will be skipped
+    // and why before committing. If none, fall through to the original
+    // confirm-and-stage path.
+    $.get('/api/staging_validate').done(function(resp) {
+        var overflows = (resp && resp.overflows) || [];
+        if (overflows.length === 0) {
+            _showStageConfirm();
+        } else {
+            _renderOverflowModal(overflows);
+        }
+    }).fail(function() {
+        // If the validate endpoint fails, fall back to the original confirm
+        // flow. The backend hard-block still prevents oversize inserts.
+        showToast('Pre-flight check failed; staging will still skip oversize rows.', 'warning');
+        _showStageConfirm();
+    });
+}
+
+function _showStageConfirm() {
     showConfirm(
         'Stage Approved Records',
         'Move <strong>' + stagingCount + '</strong> approved record(s) to the staging table?<br>Their status will change to <strong>STAGED</strong> and they will be hidden from the default view.',
-        function() {
-            var btn = $('#stageApprovedBtn');
-            btn.prop('disabled', true);
-            $.ajax({
-                url: '/api/stage_approved', method: 'POST', contentType: 'application/json',
-                data: JSON.stringify({}),
-                success: function(data) {
-                    showToast(data.message, 'success');
-                    refreshGridData();
-                    loadStats();
-                    loadStagingCount();
-                },
-                error: function(xhr) {
-                    showToast(xhr.responseJSON ? xhr.responseJSON.error : 'Staging failed', 'error');
-                    updateStagingBtn();
-                }
-            });
-        }
+        _doStageApproved
     );
+}
+
+function _renderOverflowModal(overflows) {
+    var rows = overflows.slice(0, 200).map(function(r) {
+        var v = r.violations.map(function(x) {
+            var marker = x.editable ? '' : ' <em class="text-muted">[read-only — fix at source]</em>';
+            return _escapeHtml(x.column) + ' → ' + _escapeHtml(x.staging) +
+                   ' (max ' + x.max + ', got ' + x.actual + ')' + marker;
+        }).join('<br>');
+        return '<tr><td>' + _escapeHtml(r.source_id) + '</td><td>' + v + '</td></tr>';
+    }).join('');
+    var willStage = Math.max(0, stagingCount); // staging_count already excludes overflows
+    var moreNote = overflows.length > 200 ? '<p class="text-muted small mb-2">Showing first 200.</p>' : '';
+    $('#stageOverflowBody').html(
+        '<p><strong>' + overflows.length + '</strong> row(s) won\'t fit in STG_BA_MASTER and will be skipped. ' +
+        '<strong>' + willStage + '</strong> row(s) will still be staged.</p>' +
+        moreNote +
+        '<table class="table table-sm table-striped"><thead><tr>' +
+            '<th style="width:140px;">SOURCE_ID</th><th>Overflow reasons</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table>'
+    );
+    $('#stageOverflowConfirm').off('click').on('click', function() {
+        var modalEl = document.getElementById('stageOverflowModal');
+        var inst = bootstrap.Modal.getInstance(modalEl);
+        if (inst) inst.hide();
+        _doStageApproved();
+    });
+    new bootstrap.Modal(document.getElementById('stageOverflowModal')).show();
+}
+
+function _doStageApproved() {
+    var btn = $('#stageApprovedBtn');
+    btn.prop('disabled', true);
+    $.ajax({
+        url: '/api/stage_approved', method: 'POST', contentType: 'application/json',
+        data: JSON.stringify({}),
+        success: function(data) {
+            // Warning toast (yellow) if anything was rejected; success (green) otherwise.
+            var type = data.rejected ? 'warning' : 'success';
+            showToast(data.message || ('Staged ' + (data.staged || 0)), type);
+            refreshGridData();
+            loadStats();
+            loadStagingCount();
+        },
+        error: function(xhr) {
+            showToast(xhr.responseJSON ? xhr.responseJSON.error : 'Staging failed', 'error');
+            updateStagingBtn();
+        }
+    });
 }
 
 // ── Toast ──

@@ -850,14 +850,300 @@ def count_staging_eligible(df: pd.DataFrame) -> int:
     return int(mask.sum())
 
 
-def stage_approved_records(config: Dict[str, Any], df=None) -> int:
+# ─────────────────────────────────────────────────────────────────────────────
+# Staging column-length validation
+# ─────────────────────────────────────────────────────────────────────────────
+# STG_BA_MASTER columns are declared VARCHAR(N) in Snowflake. The N values are
+# discovered at runtime via INFORMATION_SCHEMA — we never hardcode them in
+# this file because the source of truth is the DDL. The functions below feed
+# both:
+#   1. Frontend cell-highlighting / pre-flight modal
+#   2. The hard-block WHERE clause in stage_approved_records that physically
+#      prevents an oversize value from reaching the staging table.
+
+# Process-local cache of {STG_BA_MASTER_COL_NAME: CHARACTER_MAXIMUM_LENGTH}.
+# Staging DDL is static during a session, so one lookup per process is enough.
+_STAGING_LENGTHS_CACHE: Optional[Dict[str, int]] = None
+
+
+def _build_column_specs() -> List[Tuple[str, str]]:
+    """
+    Return the (staging_col, select_expression) pairs that define how source
+    rows in IMPORT_MERGE_MATCHES populate STG_BA_MASTER.
+
+    Single source of truth used by both the INSERT in stage_approved_records
+    and the LENGTH() hard-block predicates derived in get_source_field_limits
+    and get_staging_overflows.
+
+    For any base column whose `<base>_2` sibling exists in STG_BA_MASTER and
+    isn't already explicitly mapped here, the same expression is mirrored into
+    the _2 column at INSERT time (auto-mirror loop in stage_approved_records).
+    SSN_2 is intentionally specified explicitly with its own digits-only
+    transform, so the auto-mirror skips it.
+    """
+    return [
+        ('ADDRADDRESS',     "NULLIF(SOURCE_ADDRESS_RECOMEND, '')"),
+        ('ADDRCITY',        "NULLIF(SOURCE_CITY, '')"),
+        ('ADDRCONTACT',     "NULLIF(SOURCE_NAME, '')"),
+        ('ADDRCOUNTRY',     "'US'"),
+        ('ADDRSEQ',         "NULLIF(DEC_ADDRSUBCODE, '')"),
+        ('ADDRSEQ_SOURCE',  "NULLIF(SOURCE_ADDRSEQ, '')"),
+        ('ADDRSTATE',       "NULLIF(SOURCE_STATE, '')"),
+        # ADDRUNKNOWN is a VARCHAR(1) flag in staging: '1' when the source
+        # VALID_ADDRESS is FALSE, '0' otherwise (incl. NULL/TRUE).
+        # ADDRUNKNOWN_2 is auto-mirrored from this expression.
+        ('ADDRUNKNOWN',     "CASE WHEN VALID_ADDRESS = FALSE THEN '1' ELSE '0' END"),
+        ('ADDRZIPCODE',     "NULLIF(SOURCE_ZIP, '')"),
+        ('ECODE',           "CASE WHEN HOW_TO_PROCESS IN ('Merge BA and address',\n"
+                            "                                          'Add address to existing BA')\n"
+                            "                     THEN NULLIF(DEC_HDRCODE, '')\n"
+                            "                     ELSE NULL END"),
+        ('ID',              'DGO_MA.MA_STAGING.BA_MASTER_SQ.NEXTVAL'),
+        ('JIBOWNER',        'TRUE'),
+        ('LANDOWNER',       'TRUE'),
+        ('LEGACY_ID',       "NULLIF(SOURCE_ID, '')"),
+        ('LOAD_ME',         'TRUE'),
+        ('MATCH_BY_ADDRESS', "CASE WHEN HOW_TO_PROCESS = 'Merge BA and address'\n"
+                             "                     THEN TRUE ELSE FALSE END"),
+        ('MATCH_BY_ENERTIA', "CASE WHEN HOW_TO_PROCESS IN ('Merge BA and address',\n"
+                             "                                          'Add address to existing BA')\n"
+                             "                     THEN TRUE ELSE FALSE END"),
+        ('REVOWNER',        'TRUE'),
+        ('SOURCESYSTEM',    "(SELECT CONFIG_VALUE FROM BA_CONFIG\n"
+                            "                 WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME')"),
+        ('SOURCETABLE',     "(SELECT CONFIG_VALUE FROM BA_CONFIG\n"
+                            "                 WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME')"),
+        ('SSN',             "NULLIF(SOURCE_SSN, '')"),
+        ('SSN_2',           "NULLIF(REGEXP_REPLACE(SOURCE_SSN, '[^A-Za-z0-9]', ''), '')"),
+        ('VALIDATION',      "'IMPORT_MERGE_MATCHES.ID = ' || CAST(ID AS VARCHAR)"),
+    ]
+
+
+def _expand_with_auto_mirror(
+    column_specs: List[Tuple[str, str]],
+    all_staging_cols: set,
+) -> Tuple[List[Tuple[str, str]], List[str]]:
+    """For each base column, if `<base>_2` exists in staging and isn't already
+    explicit, append the same SELECT expression for it. Returns (expanded_list,
+    list_of_auto_mirrored_col_names)."""
+    explicit = {col for col, _ in column_specs}
+    expanded: List[Tuple[str, str]] = []
+    auto_mirrored: List[str] = []
+    for col, expr in column_specs:
+        expanded.append((col, expr))
+        sibling = col + '_2'
+        if sibling in all_staging_cols and sibling not in explicit:
+            expanded.append((sibling, expr))
+            auto_mirrored.append(sibling)
+    return expanded, auto_mirrored
+
+
+def get_staging_column_lengths(config: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Return {STG_BA_MASTER_COL_NAME: CHARACTER_MAXIMUM_LENGTH} for every string
+    column of DGO_MA.MA_STAGING.STG_BA_MASTER. Cached for the process lifetime.
+
+    Boolean / numeric / sequence columns return no entry — they have no
+    declared character length and aren't subject to overflow.
+    """
+    global _STAGING_LENGTHS_CACHE
+    if _STAGING_LENGTHS_CACHE is not None:
+        return _STAGING_LENGTHS_CACHE
+
+    conn = get_snowflake_connection(config)
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH
+            FROM DGO_MA.INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = 'MA_STAGING'
+              AND TABLE_NAME = 'STG_BA_MASTER'
+              AND DATA_TYPE IN ('TEXT', 'VARCHAR', 'CHAR', 'STRING')
+        """)
+        result = {row[0].upper(): int(row[1]) for row in cur.fetchall() if row[1] is not None}
+    finally:
+        cur.close()
+
+    _STAGING_LENGTHS_CACHE = result
+    return result
+
+
+# Map of grid-side (lowercase) editable field names to the staging column(s)
+# they ultimately populate. Used by /api/staging_limits to drive the
+# light-red cell highlighting in the AG Grid. Only EDITABLE columns are
+# listed; read-only overflow (SSN, SOURCE_ID, DEC_HDRCODE) is reported in the
+# pre-flight modal but not as cell highlights — the user can't fix it from
+# the grid.
+SOURCE_TO_STAGING_FIELDS: Dict[str, List[str]] = {
+    'source_name':             ['ADDRCONTACT'],
+    'source_address_recomend': ['ADDRADDRESS'],
+    'source_city':             ['ADDRCITY'],
+    'source_state':            ['ADDRSTATE'],
+    'source_zip':              ['ADDRZIPCODE'],
+}
+
+
+def get_source_field_limits(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """
+    Build the {grid_field: {max, staging_columns}} dict consumed by the
+    frontend.
+
+    For each source field, the effective max is min(declared_length_of_target,
+    declared_length_of_<target>_2) — if a `_2` sibling exists and is
+    auto-mirrored, the stricter of the two limits applies (the same value is
+    written to both, so it must fit in both).
+    """
+    lengths = get_staging_column_lengths(config)
+    all_string_cols = set(lengths.keys())
+    explicit_in_specs = {col for col, _ in _build_column_specs()}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for src_field, targets in SOURCE_TO_STAGING_FIELDS.items():
+        # Include auto-mirrored _2 siblings: same value goes there too.
+        all_targets = list(targets)
+        for t in list(targets):
+            sib = t + '_2'
+            if sib in all_string_cols and sib not in explicit_in_specs:
+                all_targets.append(sib)
+
+        usable = [lengths[c] for c in all_targets if c in lengths]
+        if not usable:
+            continue
+        out[src_field] = {
+            'max': min(usable),
+            'staging_columns': all_targets,
+        }
+    return out
+
+
+def get_staging_overflows(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Pre-flight enumerator: return one entry per eligible row whose mapped
+    values would overflow at least one staging column.
+
+    Each entry is:
+      {
+        'source_id': str, 'source_ssn': str,
+        'violations': [
+          {'column': 'source_name', 'staging': 'ADDRCONTACT',
+           'max': 35, 'actual': 47, 'editable': True},
+          ...
+        ]
+      }
+
+    Checks ALL mapped string columns (editable AND read-only) so the modal
+    can show every reason a row will be rejected — even ones the user must
+    fix at the source rather than in the grid.
+    """
+    table = config.get('table', 'import_merge_matches').upper()
+    table = _safe_table(table)
+
+    column_specs = _build_column_specs()
+    lengths = get_staging_column_lengths(config)
+
+    # Map each mapped staging column back to (a) a source-side column name
+    # the grid recognises and (b) whether it's editable from the grid.
+    # Keys here are STAGING column names; values are the metadata used in
+    # the violation entry returned to the frontend.
+    staging_to_source = {
+        'ADDRADDRESS':    {'column': 'source_address_recomend', 'editable': True},
+        'ADDRCITY':       {'column': 'source_city',             'editable': True},
+        'ADDRCONTACT':    {'column': 'source_name',             'editable': True},
+        'ADDRSEQ':        {'column': 'dec_addrsubcode',         'editable': False},
+        'ADDRSEQ_SOURCE': {'column': 'source_addrseq',          'editable': False},
+        'ADDRSTATE':      {'column': 'source_state',            'editable': True},
+        'ADDRZIPCODE':    {'column': 'source_zip',              'editable': True},
+        'ECODE':          {'column': 'dec_hdrcode',             'editable': False},
+        'LEGACY_ID':      {'column': 'source_id',               'editable': False},
+        'SSN':            {'column': 'source_ssn',              'editable': False},
+        'SSN_2':          {'column': 'source_ssn',              'editable': False},
+    }
+
+    # Build per-staging-column LENGTH() expressions and overflow predicates.
+    # We reuse the SELECT expression from column_specs so SSN_2's digits-only
+    # transform and ECODE's HOW_TO_PROCESS conditional are honored exactly.
+    select_parts: List[str] = ["SOURCE_ID", "SOURCE_SSN"]
+    overflow_terms: List[str] = []
+    # Track which alias maps to which staging column for result parsing.
+    alias_to_meta: List[Tuple[str, str, int]] = []  # (alias, staging_col, max_len)
+
+    for staging_col, expr in column_specs:
+        if staging_col not in staging_to_source:
+            continue  # not a mapped string column we surface to the user
+        max_len = lengths.get(staging_col)
+        if max_len is None:
+            continue
+        # Snowflake column aliases must be valid identifiers.
+        alias = f"L_{staging_col}"
+        select_parts.append(f"LENGTH({expr}) AS {alias}")
+        overflow_terms.append(f"LENGTH({expr}) > {max_len}")
+        alias_to_meta.append((alias, staging_col, max_len))
+
+    if not overflow_terms:
+        return []
+
+    sql = (
+        f"SELECT {', '.join(select_parts)} "
+        f"FROM {table} "
+        f"WHERE UPPER(RECOMMENDATION) = 'APPROVED' "
+        f"  AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) <> '' "
+        f"  AND HOW_TO_PROCESS <> 'Manual Review - DNP' "
+        f"  AND ({' OR '.join(overflow_terms)})"
+    )
+
+    conn = get_snowflake_connection(config)
+    cur = conn.cursor()
+    try:
+        cur.execute(sql)
+        col_names = [d[0].upper() for d in cur.description]
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+
+    # Build a name->index map once so per-row parsing is O(1).
+    idx = {name: i for i, name in enumerate(col_names)}
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        violations = []
+        for alias, staging_col, max_len in alias_to_meta:
+            actual = row[idx[alias]]
+            if actual is None or actual <= max_len:
+                continue
+            meta = staging_to_source[staging_col]
+            violations.append({
+                'column':   meta['column'],
+                'staging':  staging_col,
+                'max':      max_len,
+                'actual':   int(actual),
+                'editable': meta['editable'],
+            })
+        if violations:
+            out.append({
+                'source_id':  row[idx['SOURCE_ID']],
+                'source_ssn': row[idx['SOURCE_SSN']],
+                'violations': violations,
+            })
+    return out
+
+
+def stage_approved_records(config: Dict[str, Any], df=None) -> Dict[str, Any]:
     """
     Copy eligible records to DGO_MA.MA_STAGING.STG_BA_MASTER and flag them
     as STAGED in the source table, all within a single transaction.
 
-    Returns the number of records staged.
+    Records whose mapped values would overflow a destination VARCHAR column
+    are excluded from BOTH the INSERT and the STAGED flag — they stay APPROVED
+    so they remain visible in the grid for the user to fix. The pre-flight
+    /api/staging_validate endpoint surfaces them ahead of time; this function
+    is the defense-in-depth backstop and never inserts an oversized value.
+
+    Returns:
+        {'staged': int, 'rejected': int, 'rejected_rows': List[dict]}
     """
     table = config.get('table', 'import_merge_matches').upper()
+    table = _safe_table(table)
+    empty_result = {'staged': 0, 'rejected': 0, 'rejected_rows': []}
 
     if df is None:
         # Load eligible records from Snowflake directly. 'Manual Review - DNP'
@@ -874,7 +1160,7 @@ def stage_approved_records(config: Dict[str, Any], df=None) -> int:
         rows = cursor_check.fetchall()
         cursor_check.close()
         if not rows:
-            return 0
+            return empty_result
         eligible = pd.DataFrame(rows, columns=['source_id', 'source_ssn'])
     else:
         # Identify eligible rows from the DataFrame
@@ -885,7 +1171,7 @@ def stage_approved_records(config: Dict[str, Any], df=None) -> int:
         )
         eligible = df[mask]
         if eligible.empty:
-            return 0
+            return empty_result
 
     # Build WHERE clause using source_id + source_ssn pairs
     pairs = list(zip(
@@ -909,69 +1195,57 @@ def stage_approved_records(config: Dict[str, Any], df=None) -> int:
     cursor = conn.cursor()
 
     try:
-        # Base column -> SELECT expression mapping for STG_BA_MASTER.
-        # For any base column whose `<base>_2` sibling exists in STG_BA_MASTER
-        # AND isn't already explicitly mapped here, the same expression is
-        # mirrored into the _2 column automatically (see auto-mirror loop below).
-        # SSN_2 is intentionally specified explicitly with its own digits-only
-        # transform, so the auto-mirror skips it.
-        column_specs = [
-            ('ADDRADDRESS',     "NULLIF(SOURCE_ADDRESS_RECOMEND, '')"),
-            ('ADDRCITY',        "NULLIF(SOURCE_CITY, '')"),
-            ('ADDRCONTACT',     "NULLIF(SOURCE_NAME, '')"),
-            ('ADDRCOUNTRY',     "'US'"),
-            ('ADDRSEQ',         "NULLIF(DEC_ADDRSUBCODE, '')"),
-            ('ADDRSEQ_SOURCE',  "NULLIF(SOURCE_ADDRSEQ, '')"),
-            ('ADDRSTATE',       "NULLIF(SOURCE_STATE, '')"),
-            # ADDRUNKNOWN is a VARCHAR(1) flag in staging: '1' when the source
-            # VALID_ADDRESS is FALSE, '0' otherwise (incl. NULL/TRUE).
-            # ADDRUNKNOWN_2 is auto-mirrored from this expression.
-            ('ADDRUNKNOWN',     "CASE WHEN VALID_ADDRESS = FALSE THEN '1' ELSE '0' END"),
-            ('ADDRZIPCODE',     "NULLIF(SOURCE_ZIP, '')"),
-            ('ECODE',           "CASE WHEN HOW_TO_PROCESS IN ('Merge BA and address',\n"
-                                "                                          'Add address to existing BA')\n"
-                                "                     THEN NULLIF(DEC_HDRCODE, '')\n"
-                                "                     ELSE NULL END"),
-            ('ID',              'DGO_MA.MA_STAGING.BA_MASTER_SQ.NEXTVAL'),
-            ('JIBOWNER',        'TRUE'),
-            ('LANDOWNER',       'TRUE'),
-            ('LEGACY_ID',       "NULLIF(SOURCE_ID, '')"),
-            ('LOAD_ME',         'TRUE'),
-            ('MATCH_BY_ADDRESS', "CASE WHEN HOW_TO_PROCESS = 'Merge BA and address'\n"
-                                 "                     THEN TRUE ELSE FALSE END"),
-            ('MATCH_BY_ENERTIA', "CASE WHEN HOW_TO_PROCESS IN ('Merge BA and address',\n"
-                                 "                                          'Add address to existing BA')\n"
-                                 "                     THEN TRUE ELSE FALSE END"),
-            ('REVOWNER',        'TRUE'),
-            ('SOURCESYSTEM',    "(SELECT CONFIG_VALUE FROM BA_CONFIG\n"
-                                "                 WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME')"),
-            ('SOURCETABLE',     "(SELECT CONFIG_VALUE FROM BA_CONFIG\n"
-                                "                 WHERE CATEGORY = 'GENERAL' AND CONFIG_KEY = 'SOURCE_COMPANY_NAME')"),
-            ('SSN',             "NULLIF(SOURCE_SSN, '')"),
-            ('SSN_2',           "NULLIF(REGEXP_REPLACE(SOURCE_SSN, '[^A-Za-z0-9]', ''), '')"),
-            ('VALIDATION',      "'IMPORT_MERGE_MATCHES.ID = ' || CAST(ID AS VARCHAR)"),
-        ]
+        # Single source of truth for the column mapping — also used by
+        # get_source_field_limits / get_staging_overflows so all three paths
+        # stay in lockstep.
+        column_specs = _build_column_specs()
 
         # Discover what columns actually exist in STG_BA_MASTER so we only
         # reference _2 siblings that are real. Cheap: one DESCRIBE per stage op.
         cursor.execute("DESCRIBE TABLE DGO_MA.MA_STAGING.STG_BA_MASTER")
         all_staging_cols = {row[0].upper() for row in cursor.fetchall()}
 
-        # Auto-mirror: for each base column, if `<base>_2` exists in staging
-        # and isn't already explicitly mapped above, write the same value to it.
-        explicit_cols = {col for col, _ in column_specs}
-        expanded = []
-        auto_mirrored = []
-        for col, expr in column_specs:
-            expanded.append((col, expr))
-            sibling = col + '_2'
-            if sibling in all_staging_cols and sibling not in explicit_cols:
-                expanded.append((sibling, expr))
-                auto_mirrored.append(sibling)
+        expanded, auto_mirrored = _expand_with_auto_mirror(column_specs, all_staging_cols)
 
         if auto_mirrored:
             print(f"  [STAGING] Auto-mirroring {len(auto_mirrored)} _2 column(s): "
                   f"{', '.join(auto_mirrored)}")
+
+        # Hard-block: physically prevent any oversize value from reaching
+        # staging by ANDing LENGTH(<expr>) <= <max> for every mapped string
+        # column into the WHERE clause. NULL/empty values are kept valid
+        # because LENGTH(NULL) IS NULL (the OR keeps them through the filter).
+        # Same predicate is applied to the UPDATE-to-STAGED so a rejected row
+        # stays APPROVED instead of being silently dropped.
+        lengths = get_staging_column_lengths(config)
+        length_predicates: List[str] = []
+        for staging_col, expr in expanded:
+            n = lengths.get(staging_col)
+            if n is None:
+                continue
+            length_predicates.append(f"(({expr}) IS NULL OR LENGTH({expr}) <= {n})")
+        length_where = " AND ".join(length_predicates) if length_predicates else "TRUE"
+        full_where = f"({eligibility_where}) AND ({length_where})"
+
+        # Capture the rejected rows BEFORE the INSERT so the response can
+        # report exactly what was skipped and why. Restricted to this batch's
+        # (SOURCE_ID, SOURCE_SSN) pairs so we don't pull unrelated overflows.
+        cursor.execute(
+            f"SELECT SOURCE_ID, SOURCE_SSN FROM {table} "
+            f"WHERE ({eligibility_where}) AND NOT ({length_where})",
+            pair_params,
+        )
+        rejected_pairs = cursor.fetchall()
+
+        rejected_rows: List[Dict[str, Any]] = []
+        if rejected_pairs:
+            # Reuse the global enumerator to get the per-row violation list,
+            # then keep only the entries that match this batch.
+            batch_keys = {(str(p[0]), str(p[1])) for p in rejected_pairs}
+            for entry in get_staging_overflows(config):
+                key = (str(entry.get('source_id')), str(entry.get('source_ssn')))
+                if key in batch_keys:
+                    rejected_rows.append(entry)
 
         cols_sql = ',\n                '.join(c for c, _ in expanded)
         vals_sql = ',\n                '.join(e for _, e in expanded)
@@ -984,21 +1258,26 @@ def stage_approved_records(config: Dict[str, Any], df=None) -> int:
             SELECT
                 {vals_sql}
             FROM {table}
-            WHERE {eligibility_where}
+            WHERE {full_where}
             """,
             pair_params
         )
         staged_count = cursor.rowcount
 
-        # UPDATE source: flag as STAGED
+        # UPDATE source: flag as STAGED — only the rows that were actually
+        # inserted. Rejected rows stay APPROVED.
         cursor.execute(
             f"UPDATE {table} SET RECOMMENDATION = 'STAGED' "
-            f"WHERE {eligibility_where}",
+            f"WHERE {full_where}",
             pair_params
         )
 
         conn.commit()
-        return staged_count
+        return {
+            'staged': staged_count,
+            'rejected': len(rejected_rows),
+            'rejected_rows': rejected_rows,
+        }
 
     except Exception:
         conn.rollback()

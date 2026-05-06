@@ -19,6 +19,7 @@ from data_loader import (
     load_data, get_snowflake_connection, merge_changes_to_snowflake,
     write_audit_log_to_snowflake, read_audit_log_from_snowflake,
     ensure_snowflake_schema, count_staging_eligible, stage_approved_records,
+    get_source_field_limits, get_staging_overflows,
     save_grid_setting, load_grid_setting,
     get_bucket_counts, query_snowflake_page,
     save_record_immediately, save_records_batch,
@@ -1000,7 +1001,12 @@ def save_changes():
 
 @app.route('/api/staging_count')
 def staging_count():
-    """Return the number of records eligible for staging."""
+    """Return the number of records that will actually be staged.
+
+    This is `eligible_rows - overflow_rows`. We subtract overflows so the
+    Stage button's `(N)` badge tells the truth — a row that's APPROVED but
+    will be rejected for length doesn't count as "going to staging."
+    """
     try:
         conn = get_snowflake_connection(DATA_CONFIG)
         cursor = conn.cursor()
@@ -1015,34 +1021,80 @@ def staging_count():
                 f"AND HOW_TO_PROCESS IS NOT NULL AND TRIM(HOW_TO_PROCESS) != '' "
                 f"AND HOW_TO_PROCESS <> 'Manual Review - DNP'"
             )
-            count = int(cursor.fetchone()[0])
-            return jsonify({'count': count})
+            eligible = int(cursor.fetchone()[0])
         finally:
             cursor.close()
+
+        # Subtract length-overflow rows so the badge reflects only what will
+        # actually fit into STG_BA_MASTER. get_staging_overflows already filters
+        # to the same eligibility predicate above.
+        overflow_count = len(get_staging_overflows(DATA_CONFIG))
+        count = max(0, eligible - overflow_count)
+        return jsonify({'count': count, 'eligible': eligible, 'overflow': overflow_count})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/staging_limits')
+def staging_limits():
+    """Return per-source-field max-length map driving the AG Grid oversize-cell
+    highlights. Shape: {limits: {source_name: {max:35, staging_columns:[...]}, ...}}.
+    Backed by INFORMATION_SCHEMA on STG_BA_MASTER, cached for the process lifetime."""
+    try:
+        return jsonify({'limits': get_source_field_limits(DATA_CONFIG)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/staging_validate')
+def staging_validate():
+    """Pre-flight: list every eligible row whose mapped values would overflow
+    a STG_BA_MASTER column, with per-column reasons. Used by the frontend to
+    show the rejection modal before the user commits to staging."""
+    try:
+        return jsonify({'overflows': get_staging_overflows(DATA_CONFIG)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/stage_approved', methods=['POST'])
 def stage_approved():
-    """Copy eligible APPROVED records to staging table and flag as STAGED."""
-    try:
-        staged = stage_approved_records(DATA_CONFIG, df=None)
+    """Copy eligible APPROVED records to staging table and flag as STAGED.
 
-        if staged == 0:
+    Records whose mapped values would overflow are rejected here too — even
+    if the frontend pre-flight is bypassed, the SQL hard-block in
+    stage_approved_records prevents an oversized value from landing in
+    STG_BA_MASTER. The response reports both staged and rejected counts.
+    """
+    try:
+        result = stage_approved_records(DATA_CONFIG, df=None)
+        staged = int(result.get('staged', 0))
+        rejected = int(result.get('rejected', 0))
+
+        if staged == 0 and rejected == 0:
             return jsonify({
                 'success': True,
                 'staged': 0,
-                'message': 'No eligible records to stage'
+                'rejected': 0,
+                'rejected_rows': [],
+                'message': 'No eligible records to stage',
             })
 
         # Invalidate cache so the next request reflects STAGED flags
         _invalidate_cache()
 
+        if rejected > 0:
+            message = (f"Staged {staged} record(s); rejected {rejected} for "
+                       f"length overflow")
+        else:
+            message = f'Staged {staged} record(s) to staging table'
+
         return jsonify({
             'success': True,
             'staged': staged,
-            'message': f'Staged {staged} record(s) to staging table'
+            'rejected': rejected,
+            'rejected_rows': result.get('rejected_rows', []),
+            'message': message,
         })
 
     except Exception as e:

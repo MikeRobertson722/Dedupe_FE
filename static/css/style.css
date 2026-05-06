@@ -63,6 +63,11 @@ body {
 /* Bad address cell highlight */
 .ag-cell.bad-addr-cell { background-color: #ffd6d6 !important; }
 
+/* Oversize-for-staging cell highlight (value would be rejected from STG_BA_MASTER).
+   Same light red as .do-not-use-cell so the warning style is consistent —
+   tooltip distinguishes the cause. */
+.ag-cell.oversize-cell { background-color: #f8d7da !important; }
+
 /* Cell selection */
 .ag-cell.cell-selected { background-color: #b3d9ff !important; outline: 1px solid #0d6efd; }
 
