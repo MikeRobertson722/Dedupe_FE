@@ -22,3 +22,13 @@ This solution was arrived at after extensive testing of every alternative:
 2. `--ag-row-height: 24px !important` in `style.css` prevents AG Grid's 42px CSS override
 3. `fixRowPositions()` runs on `onBodyScroll` (every scroll event, RAF-throttled), on `onBodyScrollEnd` (final correction), and after each IRM block-load `successCallback`. It rewrites `translateY` on rendered rows only — never the container height.
 4. Pinned-left rows (checkbox column) are synced to match center row heights inside the same RAF pass
+
+## Filter state never persists across page loads
+
+The SSN Match, Min/Max Name, Min/Max Addr filters and the active rec-bucket selection **always reset to "All"** on every page load. Column state (order, width, visibility) still persists via `/api/grid_settings`; only `filter_state` is intentionally ignored on load.
+
+Rationale: previously the server returned a saved `filter_state` (e.g. `ssnFilter: "yes"`), the client restored those values during `initGrid`, and the user-visible record count would inconsistently show "496 of 1,538 records" instead of "1,538 records" after a refresh — confusing because the bucket cards still showed 1,538.
+
+The implementation is one line in `static/js/app.js` near the `initGrid` call: pass `null` for `filter_state` regardless of what the server returned. The regression test in `tests/test_filters_reset_on_load.py` seeds `ssnFilter: "yes"` on the server, reloads the page, and asserts that the SSN dropdown is back at "All" and the grid info shows the unfiltered count.
+
+Do not re-enable filter persistence without explicit user direction.

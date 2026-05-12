@@ -988,7 +988,13 @@ $(document).ready(function() {
         });
         $('#editRecommendation').append('<option value="PROCESSED">PROCESSED</option>');
         $('#editRecommendation').append('<option value="STAGED">STAGED</option>');
-        initGrid(settings.column_state, settings.filter_state);
+        // Filters (SSN Match, name/addr score ranges, active rec bucket) always
+        // reset to 'All' on every page load — pass null instead of the saved
+        // filter_state. Column state (order/width/visibility) is still restored.
+        // See tests/test_filters_reset_on_load.py for the rationale: persisting
+        // ssnFilter='yes' across loads produced the '496 of 1,538 records'
+        // user-visible inconsistency.
+        initGrid(settings.column_state, null);
         loadStats();
         loadStagingCount();
         // Fetch the per-source-field char limits from STG_BA_MASTER. The grid
