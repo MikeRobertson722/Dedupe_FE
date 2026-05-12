@@ -676,6 +676,14 @@ function initGrid(savedColState, savedFilterState) {
         onPaginationChanged: function() {
             updateGridInfo();
         },
+        // Fix during scroll AND at scroll-end. fixRowPositions is RAF-throttled
+        // internally (cancelAnimationFrame + requestAnimationFrame), so calling
+        // it on every scroll event coalesces to at most one fix per frame.
+        // Without onBodyScroll, PageUp/PageDown bursts queue many scroll events
+        // but only one onBodyScrollEnd fires after the whole burst — so all
+        // repositioning collapses into a single ~3000px visible jump at the
+        // end. onBodyScroll spreads the corrections across the scroll instead.
+        onBodyScroll: function() { fixRowPositions(); },
         onBodyScrollEnd: function() { fixRowPositions(); },
         onSelectionChanged: function() {
             selectedRows.clear();
@@ -753,10 +761,20 @@ function refreshCacheStatus() {
 // ── Row-position fix for autoHeight in IRM ──
 // autoHeight expands cells but IRM doesn't recompute translateY.
 // Fix only the rendered rows' positions; never touch container height.
+//
+// Timing: we used setTimeout(100ms) here previously, but on PageUp/PageDown/
+// smooth scroll the visible viewport showed rows at AG Grid's idx*24 default
+// positions for ~100-200ms, then the fix would land and shift them by up to
+// 3000px at once — visible as a "blink" / "screen updates after the scroll."
+// Switching to requestAnimationFrame collapses the gap to one frame (~16ms),
+// so each PageUp/PageDown press queues a fix that runs before the next press
+// dispatches, and the user sees correct positions throughout the scroll
+// rather than one giant rewrite at scroll-end.
 var _fixRowTimer = null;
 function fixRowPositions() {
-    clearTimeout(_fixRowTimer);
-    _fixRowTimer = setTimeout(function() {
+    if (_fixRowTimer !== null) cancelAnimationFrame(_fixRowTimer);
+    _fixRowTimer = requestAnimationFrame(function() {
+        _fixRowTimer = null;
         var container = document.querySelector('.ag-center-cols-container');
         if (!container) return;
         var rows = container.querySelectorAll('.ag-row');
@@ -775,9 +793,15 @@ function fixRowPositions() {
         if (!hasMultiLine || !rowList.length) return;
         rowList.sort(function(a, b) { return a.idx - b.idx; });
 
-        // Start from the first rendered row's current position
-        var m = (rowList[0].el.style.transform || '').match(/translateY\(([^)]+)px\)/);
-        var cumY = m ? parseFloat(m[1]) : 0;
+        // Anchor the topmost rendered row to its IRM-default position
+        // (idx * defaultRowHeight). Reading the row's *current* transform
+        // is unsafe: AG Grid recycles DOM rows on scroll without always
+        // resetting style.transform, so a prior fixRowPositions output
+        // can leak in as the next call's input and drift compounds. That
+        // pushed rendered rows below scrollTop, producing visible white
+        // space below the headers after many small wheel-scroll segments.
+        // Anchoring at idx*24 makes fixRowPositions idempotent.
+        var cumY = rowList[0].idx * 24;
 
         for (var i = 0; i < rowList.length; i++) {
             var el = rowList[i].el;
@@ -792,7 +816,7 @@ function fixRowPositions() {
             }
             cumY += h;
         }
-    }, 100);
+    });
 }
 
 // ── Infinite Row Model datasource ──

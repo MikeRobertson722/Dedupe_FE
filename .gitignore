@@ -20,6 +20,9 @@ debug_screenshots/
 test_screenshots/
 tests/screenshots/
 
+# Scroll diagnostic recordings (webm videos + JSON traces, large binaries)
+recordings/
+
 # One-off debug scripts
 investigate_replace.py
 verify_replace_final.py
