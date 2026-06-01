@@ -19,6 +19,7 @@ SOURCE_ADDRS_CLEANED.xlsx
 debug_screenshots/
 test_screenshots/
 tests/screenshots/
+tests/_screens/
 
 # Scroll diagnostic recordings (webm videos + JSON traces, large binaries)
 recordings/

@@ -23,7 +23,14 @@
       "Bash(powershell -command \"Get-Process chrome | Select-Object Id, MainWindowTitle\")",
       "Skill(update-config)",
       "Bash(ls:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue)",
+      "Bash(grep -iE \"venv|env|requirements|\\\\.env$\")",
+      "PowerShell(Get-ChildItem -Path C:\\\\ClaudeMain\\\\BA_Review_App -Directory | Where-Object { $_.Name -match 'venv|env|\\\\.venv' } | Select-Object Name; \\(Get-Command python -ErrorAction SilentlyContinue\\).Source)",
+      "PowerShell($env:PYTHONUNBUFFERED=1; python C:\\\\ClaudeMain\\\\BA_Review_App\\\\app.py)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri http://localhost:5000/ -UseBasicParsing -TimeoutSec 15; \"HTTP $\\($r.StatusCode\\), $\\($r.RawContentLength\\) bytes\" } catch { \"ERROR: $_\" })",
+      "Bash(git remote *)",
+      "Bash(git config *)"
     ]
   },
   "enabledPlugins": {

@@ -385,14 +385,16 @@ _GRID_COLUMNS = [
     'NAME_MATCH_DETAIL', 'ADDR_MATCH_DETAIL',
 ]
 
-# Columns safe to sort by (prevents SQL injection via ORDER BY)
+# Columns safe to sort by (prevents SQL injection via ORDER BY).
+# 'master' is the computed window-function alias added in query_snowflake_page;
+# the outer SELECT sees it as a column and can sort on it.
 _SORTABLE_COLS = {
     'id', 'ssn_match', 'name_score', 'address_score', 'nameaddrscore',
     'recommendation', 'source_name', 'source_address', 'source_city',
     'source_state', 'source_zip', 'source_id', 'source_addrseq',
     'dec_name', 'dec_address', 'dec_city', 'dec_state', 'dec_zip',
     'dec_hdrcode', 'dec_address_looked_up', 'jib', 'rev', 'vendor',
-    'how_to_process', 'memo', 'address_reason', 'run_id',
+    'how_to_process', 'memo', 'address_reason', 'run_id', 'master',
 }
 
 
@@ -502,8 +504,25 @@ def query_snowflake_page(
         else:
             limit_sql = f'LIMIT {int(length)} OFFSET {int(start)}'
 
+        # MASTER is a derived survivor flag: per DEC_HDRCODE group, the row with
+        # the highest NAMEADDRSCORE (ties: lowest ID) is TRUE; the rest FALSE.
+        # Rows with empty DEC_HDRCODE have no duplicates by definition → TRUE.
+        # Computed in an inner SELECT so the partitioning sees the whole table,
+        # not the filtered set — MASTER is globally stable across filter changes.
+        master_expr = (
+            "CASE "
+            "WHEN NULLIF(DEC_HDRCODE, '') IS NULL THEN TRUE "
+            "WHEN ROW_NUMBER() OVER ("
+            "PARTITION BY DEC_HDRCODE "
+            "ORDER BY NAMEADDRSCORE DESC NULLS LAST, ID ASC"
+            ") = 1 THEN TRUE "
+            "ELSE FALSE END AS MASTER"
+        )
+
         cursor.execute(
-            f'SELECT {col_list} FROM {table} {where_sql} {order_sql} {limit_sql}',
+            f'SELECT * FROM ('
+            f' SELECT {col_list}, {master_expr} FROM {table}'
+            f') sub {where_sql} {order_sql} {limit_sql}',
             params,
         )
         col_names = [desc[0].lower() for desc in cursor.description]
@@ -902,7 +921,11 @@ def _build_column_specs() -> List[Tuple[str, str]]:
                             "                                          'Add address to existing BA')\n"
                             "                     THEN NULLIF(DEC_HDRCODE, '')\n"
                             "                     ELSE NULL END"),
+        ('ENTITY_LIST_NAME', "NULLIF(SOURCE_NAME, '')"),
+        ('ENTTAXNAME',      "NULLIF(SOURCE_NAME, '')"),
+        ('ETYPE',           "'BusAssoc'"),
         ('ID',              'DGO_MA.MA_STAGING.BA_MASTER_SQ.NEXTVAL'),
+        ('IS_VENDOR',       'CASE WHEN VENDOR = 1 THEN TRUE ELSE NULL END'),
         ('JIBOWNER',        'TRUE'),
         ('LANDOWNER',       'TRUE'),
         ('LEGACY_ID',       "NULLIF(SOURCE_ID, '')"),
@@ -920,6 +943,7 @@ def _build_column_specs() -> List[Tuple[str, str]]:
         ('SSN',             "NULLIF(SOURCE_SSN, '')"),
         ('SSN_2',           "NULLIF(REGEXP_REPLACE(SOURCE_SSN, '[^A-Za-z0-9]', ''), '')"),
         ('VALIDATION',      "'IMPORT_MERGE_MATCHES.ID = ' || CAST(ID AS VARCHAR)"),
+        ('VENDOR',          'CASE WHEN VENDOR = 1 THEN TRUE ELSE FALSE END'),
     ]
 
 

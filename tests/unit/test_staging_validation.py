@@ -63,6 +63,19 @@ def test_ecode_is_conditional_on_how_to_process():
     assert 'DEC_HDRCODE' in expr
 
 
+def test_is_vendor_is_conditional_on_vendor_flag():
+    """IS_VENDOR is set to TRUE when the source row's VENDOR flag = 1; otherwise
+    NULL (vendor=0 rows leave IS_VENDOR unset). Mirrors the grid's vendor
+    checkbox into the staging table."""
+    from data_loader import _build_column_specs
+    specs = dict(_build_column_specs())
+    assert 'IS_VENDOR' in specs, "IS_VENDOR must be mapped into STG_BA_MASTER"
+    expr = specs['IS_VENDOR']
+    assert 'CASE WHEN VENDOR = 1' in expr
+    assert 'THEN TRUE' in expr
+    assert 'ELSE NULL' in expr
+
+
 # ---------------------------------------------------------------------------
 # _expand_with_auto_mirror — pure logic, no DB
 # ---------------------------------------------------------------------------

@@ -180,6 +180,7 @@ const COL_DEFS = [
     ['JIB', '#212529', 'jib', false],
     ['Rev', '#212529', 'rev', false],
     ['Vendor', '#212529', 'vendor', false],
+    ['Master', '#212529', 'master', false],
     ['Memo', '#212529', 'memo', false],
     ['Run ID', '#212529', 'run_id', false],
     ['Name Normal', '#2e7d32', 'name_normal_detail', false],
@@ -570,6 +571,14 @@ function initGrid(savedColState, savedFilterState) {
         { headerName: 'JIB', field: 'jib', colId: 'jib', cellRenderer: checkboxCellRenderer, width: 45, hide: true },
         { headerName: 'Rev', field: 'rev', colId: 'rev', cellRenderer: checkboxCellRenderer, width: 45, hide: true },
         { headerName: 'Vendor', field: 'vendor', colId: 'vendor', cellRenderer: checkboxCellRenderer, width: 55, hide: true },
+        { headerName: 'Master', field: 'master', colId: 'master', width: 70, hide: true,
+          headerTooltip: 'Survivor flag: TRUE for the highest-scoring row per DEC_HDRCODE group (rows with no DEC target are always TRUE).',
+          cellRenderer: function(p) {
+              if (p.value === true || p.value === 'TRUE') return '✓';
+              if (p.value === false || p.value === 'FALSE') return '✗';
+              return '';
+          }
+        },
         { headerName: 'Memo', field: 'memo', colId: 'memo', cellRenderer: memoCellRenderer, width: 160, hide: true },
         { headerName: 'Run ID', field: 'run_id', colId: 'run_id', width: 120, hide: true },
         { headerName: 'Name Normal', field: 'name_normal_detail', colId: 'name_normal_detail', width: 200, hide: true },
@@ -583,6 +592,15 @@ function initGrid(savedColState, savedFilterState) {
         rowModelType: 'infinite',
         cacheBlockSize: 100,
         maxBlocksInCache: 1000,
+        // Block-load tuning to reduce empty placeholder frames during fast scroll.
+        // Default maxConcurrentDatasourceRequests is 2 — when the user scrolls
+        // across many blocks quickly, the rest of the block fetches queue and
+        // AG Grid renders empty .ag-row-loading rows in the meantime. Those
+        // placeholder rows have offsetHeight=0, which is exactly the case the
+        // Math.max(h,24) clamp in fixRowPositions guards against, but reducing
+        // their occurrence is still a win for perceived smoothness.
+        maxConcurrentDatasourceRequests: 4,
+        blockLoadDebounceMillis: 100,
         infiniteInitialRowCount: 1,
         getRowId: function(params) { return params.data ? String(params.data._row_id) : null; },
         stopEditingWhenCellsLoseFocus: true,
@@ -607,7 +625,12 @@ function initGrid(savedColState, savedFilterState) {
         rowHeight: 24,
         headerHeight: 26,
         animateRows: false,
-        rowBuffer: 10,
+        // Generous buffer so autoHeight rows (some 30-80px tall) always have
+        // enough rendered rows to cover the viewport top-to-bottom. AG Grid's
+        // internal viewport math is based on rowHeight=24, so a tight buffer
+        // can leave the bottom of the viewport short when many rendered rows
+        // are taller than default.
+        rowBuffer: 30,
         pagination: false,
         suppressCellFocus: false,
         tooltipShowDelay: 300,
@@ -805,7 +828,16 @@ function fixRowPositions() {
 
         for (var i = 0; i < rowList.length; i++) {
             var el = rowList[i].el;
-            var h = el.offsetHeight;
+            // Clamp to the IRM default row height. Rows whose autoHeight
+            // hasn't measured yet, and loading-placeholder rows that AG Grid
+            // renders for unfetched blocks, return offsetHeight=0. Without
+            // this clamp those rows contribute 0 to cumY, the running total
+            // falls short of N*24, the last rendered row ends above the
+            // viewport bottom, and AG Grid's own scroll math (which still
+            // assumes rowHeight=24) doesn't know to render more — leaving a
+            // permanent blank area at the bottom of the viewport until
+            // refresh. Captured by tests/test_bottom_viewport_coverage.py.
+            var h = Math.max(el.offsetHeight, 24);
             el.style.transform = 'translateY(' + cumY + 'px)';
             // Sync the matching pinned-left row (checkbox column)
             var pinned = document.querySelector(
@@ -815,6 +847,22 @@ function fixRowPositions() {
                 pinned.style.transform = 'translateY(' + cumY + 'px)';
             }
             cumY += h;
+        }
+
+        // Defensive coverage check: if rendered content still falls short of
+        // the viewport bottom (e.g. very fast scroll where AG Grid rendered
+        // too few rows for variable heights), nudge AG Grid to re-evaluate.
+        // refreshCells does not mutate row positions itself; it triggers
+        // AG Grid's own viewport recalc, which will render more rows below
+        // if needed. With the Math.max(h,24) clamp above this branch should
+        // almost never fire, but it's cheap insurance.
+        var viewport = document.querySelector('#matchesGrid .ag-body-viewport')
+            || document.querySelector('.ag-body-viewport');
+        if (viewport && gridApi) {
+            var viewportBottom = viewport.scrollTop + viewport.clientHeight;
+            if (cumY < viewportBottom - 1) {
+                gridApi.refreshCells({ force: false });
+            }
         }
     });
 }
